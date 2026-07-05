@@ -136,3 +136,28 @@ def test_grab_frame_raises_when_window_not_found():
             with pytest.raises(RuntimeError, match="Game window not found"):
                 cap.grab_frame()
 
+
+def test_grab_frame_dxcam_falls_back_to_cache():
+    """If DXcam returns None after successfully grabbing a frame, the cached frame is returned."""
+    fake_frame = np.ones((600, 800, 3), dtype=np.uint8) * 128
+    mock_camera = MagicMock()
+    # First grab returns a real frame, second grab returns None
+    mock_camera.grab.side_effect = [fake_frame, None]
+    mock_dxcam = MagicMock()
+    mock_dxcam.create.return_value = mock_camera
+
+    with patch.multiple(_mod, _HAS_DXCAM=True, _HAS_WIN32=True, dxcam=mock_dxcam):
+        with patch.object(_mod, "_find_window", return_value=1):
+            with patch.object(_mod, "_get_client_rect_screen", return_value=(0, 0, 800, 600)):
+                cap = _mod.DirectCapture(prefer_backend="dxcam")
+                cap._camera = mock_camera
+                
+                # First grab successfully caches and returns fake_frame
+                frame1 = cap.grab_frame()
+                assert np.array_equal(frame1, fake_frame)
+                
+                # Second grab returns None, falls back to cached fake_frame
+                frame2 = cap.grab_frame()
+                assert np.array_equal(frame2, fake_frame)
+
+

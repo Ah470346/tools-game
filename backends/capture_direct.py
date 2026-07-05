@@ -76,7 +76,15 @@ def _find_window(title: str) -> int:
             return False  # stop enumeration
         return True
 
-    win32gui.EnumWindows(_cb, None)
+    try:
+        win32gui.EnumWindows(_cb, None)
+    except Exception:
+        # Returning False from the callback stops EnumWindows but may trigger a
+        # false-positive pywintypes.error due to a leftover error code in GetLastError().
+        # If we successfully found the window, we can ignore this error.
+        if not found:
+            raise
+
     return found
 
 
@@ -119,6 +127,7 @@ class DirectCapture(ICaptureBackend):
         self._window_title = window_title
         self._camera = None          # dxcam camera instance (if used)
         self._backend: str           # 'dxcam' | 'bitblt'
+        self._last_frame: Optional[np.ndarray] = None
 
         use_dxcam = _HAS_DXCAM and prefer_backend in ("auto", "dxcam")
 
@@ -174,16 +183,22 @@ class DirectCapture(ICaptureBackend):
         if self._camera is None:
             self._camera = dxcam.create(output_color="BGR")
 
-        frame = self._camera.grab(region=region)
+        frame = self._camera.grab(region=region, new_frame_only=False)
         if frame is None:
-            # dxcam returns None when there is no new frame yet — retry once.
-            frame = self._camera.grab(region=region)
-        if frame is None:
+            # Fallback to last successful frame if available
+            if self._last_frame is not None:
+                l, t, r, b = region
+                target_shape = (b - t, r - l, 3)
+                if self._last_frame.shape == target_shape:
+                    return self._last_frame
+
             logger.warning("DXcam returned None frame; returning black placeholder.")
             l, t, r, b = region
             return np.zeros((b - t, r - l, 3), dtype=np.uint8)
 
-        return frame  # already BGR numpy array
+        # Cache the successful frame
+        self._last_frame = frame
+        return frame
 
     # ------------------------------------------------------------------
     # Private — BitBlt path

@@ -105,7 +105,7 @@ def run_capture_test(window_title: str) -> None:
     if last_frame is not None:
         mean_pixel = last_frame.mean()
         is_black = mean_pixel < 1.0
-        print(f"  Mean pixel value: {mean_pixel:.2f}  {'⚠ FRAME IS BLACK' if is_black else '✓ Frame has content'}")
+        print(f"  Mean pixel value: {mean_pixel:.2f}  {'[WARNING] FRAME IS BLACK' if is_black else '[OK] Frame has content'}")
 
         # Save PNG for visual inspection
         cv2.imwrite(str(OUTPUT_PNG), last_frame)
@@ -127,9 +127,9 @@ def run_capture_test(window_title: str) -> None:
 
     print()
     if passed:
-        print("  ✅ PASS — capture is working correctly.")
+        print("  [PASS] — capture is working correctly.")
     else:
-        print("  ❌ FAIL:")
+        print("  [FAIL]:")
         for r in reasons:
             print(f"     - {r}")
     print()
@@ -141,6 +141,6 @@ if __name__ == "__main__":
         run_capture_test(title)
     except RuntimeError as e:
         logger.error("RuntimeError: %s", e)
-        print("\n  ❌ FAIL — could not run capture test:")
+        print("\n  [FAIL] — could not run capture test:")
         print(f"     {e}")
         sys.exit(1)
