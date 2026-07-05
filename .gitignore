@@ -45,10 +45,3 @@ obj/
 .env*.local
 # Added by code-review-graph
 .code-review-graph/
-
-# Gemini & Claude local configurations
-.gemini/
-.claude/
-.mcp.json
-.opencode.json
-
