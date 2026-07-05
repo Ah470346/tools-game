@@ -11,11 +11,22 @@ NOTE: This module is the only input module that imports pydirectinput directly.
 """
 
 import logging
+import time
+import ctypes
 
 from .input_base import IInputBackend
 from core.coordinates import find_window_by_title, ratio_to_screen
 
 logger = logging.getLogger(__name__)
+
+
+def is_admin() -> bool:
+    """Checks if the script is running with administrator privileges on Windows."""
+    try:
+        return ctypes.windll.shell32.IsUserAnAdmin() != 0
+    except Exception:
+        return False
+
 
 # ---------------------------------------------------------------------------
 # Optional Windows-only imports — guarded so the module can be imported on
@@ -46,6 +57,14 @@ class DirectInput(IInputBackend):
             window_title (str): Substring of the game window title.
         """
         self._window_title = window_title
+        if not is_admin():
+            logger.warning(
+                "[WARNING] Script is NOT running as Administrator! "
+                "Games protected by GameGuard (like Priston Tale) run with elevated privileges. "
+                "If this script is not elevated, Windows UIPI will silently block all simulated mouse/keyboard inputs. "
+                "Please run the terminal as Administrator."
+            )
+
 
     def _get_hwnd_or_raise(self) -> int:
         """Finds game window handle or raises RuntimeError."""
@@ -76,7 +95,12 @@ class DirectInput(IInputBackend):
         hwnd = self._get_hwnd_or_raise()
         screen_x, screen_y = ratio_to_screen(x_ratio, y_ratio, hwnd)
         logger.debug("DirectInput.move: ratio(%.3f, %.3f) -> screen(%d, %d)", x_ratio, y_ratio, screen_x, screen_y)
-        pydirectinput.moveTo(screen_x, screen_y)
+        
+        import sys
+        if sys.platform == "win32":
+            ctypes.windll.user32.SetCursorPos(screen_x, screen_y)
+        else:
+            pydirectinput.moveTo(screen_x, screen_y)
 
     def click(self, x_ratio: float, y_ratio: float, button: str = "left") -> None:
         """
@@ -94,7 +118,18 @@ class DirectInput(IInputBackend):
         hwnd = self._get_hwnd_or_raise()
         screen_x, screen_y = ratio_to_screen(x_ratio, y_ratio, hwnd)
         logger.debug("DirectInput.click: ratio(%.3f, %.3f) -> screen(%d, %d) button=%s", x_ratio, y_ratio, screen_x, screen_y, button)
-        pydirectinput.click(screen_x, screen_y, button=button)
+        
+        import sys
+        if sys.platform == "win32":
+            ctypes.windll.user32.SetCursorPos(screen_x, screen_y)
+            time.sleep(0.05)
+            pydirectinput.mouseDown(button=button)
+            time.sleep(0.1)
+            pydirectinput.mouseUp(button=button)
+        else:
+            pydirectinput.mouseDown(x=screen_x, y=screen_y, button=button)
+            time.sleep(0.1)
+            pydirectinput.mouseUp(x=screen_x, y=screen_y, button=button)
 
     def key(self, name: str, action: str = "press") -> None:
         """
@@ -110,7 +145,9 @@ class DirectInput(IInputBackend):
 
         logger.debug("DirectInput.key: key=%s, action=%s", name, action)
         if action == "press":
-            pydirectinput.press(name)
+            pydirectinput.keyDown(name)
+            time.sleep(0.1)
+            pydirectinput.keyUp(name)
         elif action == "down":
             pydirectinput.keyDown(name)
         elif action == "up":

@@ -12,14 +12,14 @@ This script will:
   2. Wait 2 seconds for focus.
   3. Move the mouse to the center of the game client area (0.5, 0.5).
   4. Perform a left-click to focus/interact.
-  5. Press the Spacebar ('space') to verify keyboard input (character should jump).
+  5. Press the 'v' key to verify keyboard input (character inventory should toggle).
   6. Press key '1' (character might cast skill/pot if bound).
   7. Move the mouse to (0.5, 0.7) and perform a right-click.
 
 PASS criteria:
   - Game window is successfully brought to foreground.
   - Mouse moves exactly to the center and click is registered.
-  - Character jumps when 'space' is pressed.
+  - Character inventory screen toggles when 'v' is pressed.
   - Keyboard/mouse actions operate smoothly without GameGuard alerts.
 """
 
@@ -54,6 +54,23 @@ def load_window_title() -> str:
 
 
 def main() -> None:
+    # Check for administrator privileges
+    if sys.platform == "win32":
+        import ctypes
+        try:
+            is_admin = ctypes.windll.shell32.IsUserAnAdmin() != 0
+        except Exception:
+            is_admin = False
+            
+        if not is_admin:
+            print("\n" + "!" * 80)
+            print("  [WARNING] SCRIPT IS NOT RUNNING AS ADMINISTRATOR!")
+            print("  Priston Tale VTC (under GameGuard protection) runs with elevated privileges.")
+            print("  If you run this script in a normal (non-Admin) terminal, Windows will silently")
+            print("  block all simulated inputs. Character movement and keypresses will NOT work.")
+            print("  Please close this terminal, open PowerShell/CMD as Administrator, and run again.")
+            print("!" * 80 + "\n")
+
     title = load_window_title()
     logger.info("Starting DirectInput test for window: '%s'", title)
 
@@ -85,9 +102,9 @@ def main() -> None:
     inp.click(0.5, 0.5, button="left")
     time.sleep(1.5)
 
-    # 3. Test keyboard press 'space'
-    logger.info("Step 3: Pressing key 'space'")
-    inp.key("space", action="press")
+    # 3. Test keyboard press 'v'
+    logger.info("Step 3: Pressing key 'v'")
+    inp.key("v", action="press")
     time.sleep(1.5)
 
     # 4. Test keyboard press '1'
@@ -106,7 +123,7 @@ def main() -> None:
     print("  Please check:")
     print("  1. Did the game window gain focus?")
     print("  2. Did the mouse cursor move to the center and click?")
-    print("  3. Did the character jump (from space press)?")
+    print("  3. Did the inventory window toggle open/close (from 'v' press)?")
     print("  4. Did the right click occur at the bottom center?")
     print("  If YES -> Direct Input is [PASS]")
     print("=" * 60 + "\n")
