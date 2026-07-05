@@ -1,0 +1,17 @@
+{
+  "mode": "direct",
+  "window_title": "Priston Tale",
+  "capture": {
+    "backend": "auto",
+    "_comment_backend": "'auto' tries DXcam first, falls back to bitblt"
+  },
+  "combat": {
+    "_comment": "Combat settings: LMB/RMB intervals, target source, etc."
+  },
+  "thresholds": {
+    "_comment": "Pot thresholds: HP, MP, STM levels"
+  },
+  "regions": {
+    "_comment": "HP/MP regions, etc."
+  }
+}
