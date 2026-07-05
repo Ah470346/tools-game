@@ -46,8 +46,8 @@ def _make_direct_capture_with_mock_dxcam():
         dxcam=mock_dxcam,
     ):
         # Also mock the window-lookup helper so it returns a fake HWND
-        with patch.object(_mod, "_find_window", return_value=12345):
-            with patch.object(_mod, "_get_client_rect_screen", return_value=(0, 0, 800, 600)):
+        with patch.object(_mod, "find_window_by_title", return_value=12345):
+            with patch.object(_mod, "get_client_rect_screen", return_value=(0, 0, 800, 600)):
                 cap = _mod.DirectCapture(window_title="Priston Tale", prefer_backend="dxcam")
                 cap._camera = mock_camera  # inject already-created mock camera
                 yield cap, fake_frame
@@ -98,8 +98,8 @@ def test_grab_frame_dxcam_returns_ndarray():
     mock_dxcam.create.return_value = mock_camera
 
     with patch.multiple(_mod, _HAS_DXCAM=True, _HAS_WIN32=True, dxcam=mock_dxcam):
-        with patch.object(_mod, "_find_window", return_value=1):
-            with patch.object(_mod, "_get_client_rect_screen", return_value=(0, 0, 800, 600)):
+        with patch.object(_mod, "find_window_by_title", return_value=1):
+            with patch.object(_mod, "get_client_rect_screen", return_value=(0, 0, 800, 600)):
                 cap = _mod.DirectCapture(prefer_backend="dxcam")
                 cap._camera = mock_camera
                 frame = cap.grab_frame()
@@ -117,8 +117,8 @@ def test_grab_frame_dxcam_none_returns_black():
     mock_dxcam.create.return_value = mock_camera
 
     with patch.multiple(_mod, _HAS_DXCAM=True, _HAS_WIN32=True, dxcam=mock_dxcam):
-        with patch.object(_mod, "_find_window", return_value=1):
-            with patch.object(_mod, "_get_client_rect_screen", return_value=(0, 0, 800, 600)):
+        with patch.object(_mod, "find_window_by_title", return_value=1):
+            with patch.object(_mod, "get_client_rect_screen", return_value=(0, 0, 800, 600)):
                 cap = _mod.DirectCapture(prefer_backend="dxcam")
                 cap._camera = mock_camera
                 frame = cap.grab_frame()
@@ -131,7 +131,7 @@ def test_grab_frame_raises_when_window_not_found():
     """grab_frame() raises RuntimeError if game window cannot be located."""
     mock_dxcam = MagicMock()
     with patch.multiple(_mod, _HAS_DXCAM=True, _HAS_WIN32=True, dxcam=mock_dxcam):
-        with patch.object(_mod, "_find_window", return_value=0):
+        with patch.object(_mod, "find_window_by_title", return_value=0):
             cap = _mod.DirectCapture(prefer_backend="dxcam")
             with pytest.raises(RuntimeError, match="Game window not found"):
                 cap.grab_frame()
@@ -147,8 +147,8 @@ def test_grab_frame_dxcam_falls_back_to_cache():
     mock_dxcam.create.return_value = mock_camera
 
     with patch.multiple(_mod, _HAS_DXCAM=True, _HAS_WIN32=True, dxcam=mock_dxcam):
-        with patch.object(_mod, "_find_window", return_value=1):
-            with patch.object(_mod, "_get_client_rect_screen", return_value=(0, 0, 800, 600)):
+        with patch.object(_mod, "find_window_by_title", return_value=1):
+            with patch.object(_mod, "get_client_rect_screen", return_value=(0, 0, 800, 600)):
                 cap = _mod.DirectCapture(prefer_backend="dxcam")
                 cap._camera = mock_camera
                 

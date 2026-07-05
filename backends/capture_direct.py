@@ -22,6 +22,7 @@ from typing import Optional, Tuple
 import numpy as np
 
 from backends.capture_base import ICaptureBackend
+from core.coordinates import find_window_by_title, get_client_rect_screen
 
 logger = logging.getLogger(__name__)
 
@@ -47,61 +48,7 @@ except ImportError:
     logger.warning("dxcam not available — DXcam backend disabled.")
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _find_window(title: str) -> int:
-    """
-    Returns the HWND of the first window whose title *contains* `title`.
-
-    Args:
-        title: Substring to search for in window titles.
-
-    Returns:
-        int: Window handle (HWND). 0 if not found.
-
-    Raises:
-        RuntimeError: If pywin32 is not installed.
-    """
-    if not _HAS_WIN32:
-        raise RuntimeError("pywin32 is required to find game windows (Windows only).")
-
-    found: int = 0
-
-    def _cb(hwnd: int, _: None) -> bool:
-        nonlocal found
-        if title.lower() in win32gui.GetWindowText(hwnd).lower():
-            found = hwnd
-            return False  # stop enumeration
-        return True
-
-    try:
-        win32gui.EnumWindows(_cb, None)
-    except Exception:
-        # Returning False from the callback stops EnumWindows but may trigger a
-        # false-positive pywintypes.error due to a leftover error code in GetLastError().
-        # If we successfully found the window, we can ignore this error.
-        if not found:
-            raise
-
-    return found
-
-
-def _get_client_rect_screen(hwnd: int) -> Tuple[int, int, int, int]:
-    """
-    Returns (left, top, right, bottom) of the client area in *screen* coordinates.
-
-    Args:
-        hwnd: Window handle.
-
-    Returns:
-        Tuple[int, int, int, int]: Client area bounding box on screen.
-    """
-    rect = win32gui.GetClientRect(hwnd)          # (0, 0, w, h) in client coords
-    left_top = win32gui.ClientToScreen(hwnd, (rect[0], rect[1]))
-    right_bottom = win32gui.ClientToScreen(hwnd, (rect[2], rect[3]))
-    return left_top[0], left_top[1], right_bottom[0], right_bottom[1]
+# Helpers are now imported from core.coordinates
 
 
 # ---------------------------------------------------------------------------
@@ -167,13 +114,13 @@ class DirectCapture(ICaptureBackend):
 
     def _get_region(self) -> Tuple[int, int, int, int]:
         """Returns the current client-area bounding box for this frame."""
-        hwnd = _find_window(self._window_title)
+        hwnd = find_window_by_title(self._window_title)
         if not hwnd:
             raise RuntimeError(
                 f"Game window not found: '{self._window_title}'. "
                 "Make sure Priston Tale is running."
             )
-        return _get_client_rect_screen(hwnd)
+        return get_client_rect_screen(hwnd)
 
     def _grab_dxcam(self) -> np.ndarray:
         """Grabs a frame using DXcam Desktop Duplication."""
@@ -206,14 +153,14 @@ class DirectCapture(ICaptureBackend):
 
     def _grab_bitblt(self) -> np.ndarray:
         """Grabs a frame using Windows GDI BitBlt (PrintWindow-compatible path)."""
-        hwnd = _find_window(self._window_title)
+        hwnd = find_window_by_title(self._window_title)
         if not hwnd:
             raise RuntimeError(
                 f"Game window not found: '{self._window_title}'. "
                 "Make sure Priston Tale is running."
             )
 
-        left, top, right, bottom = _get_client_rect_screen(hwnd)
+        left, top, right, bottom = get_client_rect_screen(hwnd)
         width = right - left
         height = bottom - top
 
