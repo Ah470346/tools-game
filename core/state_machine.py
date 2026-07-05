@@ -30,6 +30,7 @@ class StateMachine:
         self.input = input_backend
         self.state = "IDLE"
         self.running = False
+        self._paused_state: Optional[str] = None
 
     def transition_to(self, new_state: str, reason: str = "") -> None:
         """
@@ -41,6 +42,27 @@ class StateMachine:
         """
         logger.info(f"Transition: {self.state} -> {new_state} | Reason: {reason}")
         self.state = new_state
+
+    def stop(self) -> None:
+        """Stops the FSM immediately."""
+        self.running = False
+        self._paused_state = None
+        if self.state != "IDLE":
+            self.transition_to("IDLE", "Emergency stop")
+
+    def toggle_pause(self) -> None:
+        """Toggles pause/resume state."""
+        if not self.running:
+            logger.info("Cannot toggle pause when FSM is not running.")
+            return
+
+        if self.state == "PAUSED":
+            target_state = self._paused_state or "FARMING"
+            self._paused_state = None
+            self.transition_to(target_state, "Resume request")
+        else:
+            self._paused_state = self.state
+            self.transition_to("PAUSED", "Pause request")
 
     def update(self) -> None:
         """Runs one update step in the active state."""

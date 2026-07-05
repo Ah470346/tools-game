@@ -43,6 +43,7 @@ class MockInput(IInputBackend):
 
     def __init__(self) -> None:
         """Initializes the log of recorded commands."""
+        super().__init__()
         self.log: List[Tuple] = []
 
     def move(self, x_ratio: float, y_ratio: float) -> None:
@@ -53,6 +54,9 @@ class MockInput(IInputBackend):
             x_ratio (float): X ratio (0.0 – 1.0).
             y_ratio (float): Y ratio (0.0 – 1.0).
         """
+        if self.block_inputs:
+            logger.debug("MockInput.move blocked")
+            return
         entry = ("move", x_ratio, y_ratio)
         self.log.append(entry)
         logger.debug("MockInput.move(%.3f, %.3f)", x_ratio, y_ratio)
@@ -66,6 +70,9 @@ class MockInput(IInputBackend):
             y_ratio (float): Y ratio (0.0 – 1.0).
             button (str): Mouse button ('left', 'right', 'middle').
         """
+        if self.block_inputs:
+            logger.debug("MockInput.click blocked")
+            return
         entry = ("click", x_ratio, y_ratio, button)
         self.log.append(entry)
         logger.debug("MockInput.click(%.3f, %.3f, %s)", x_ratio, y_ratio, button)
@@ -75,9 +82,18 @@ class MockInput(IInputBackend):
         Records a keyboard command.
 
         Args:
-            name (str): Key name (e.g. 'space', 'f12').
+            name (str): Key name (e.g. 'v', 'f12').
             action (str): 'press', 'down', or 'up'.
         """
+        if self.block_inputs and action != "up":
+            logger.debug("MockInput.key blocked: key=%s, action=%s", name, action)
+            return
+
+        if action == "down":
+            self.pressed_keys.add(name)
+        elif action == "up":
+            self.pressed_keys.discard(name)
+
         entry = ("key", name, action)
         self.log.append(entry)
         logger.debug("MockInput.key(%s, %s)", name, action)

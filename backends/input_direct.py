@@ -56,6 +56,7 @@ class DirectInput(IInputBackend):
         Args:
             window_title (str): Substring of the game window title.
         """
+        super().__init__()
         self._window_title = window_title
         if not is_admin():
             logger.warning(
@@ -88,6 +89,10 @@ class DirectInput(IInputBackend):
             x_ratio (float): X coordinate ratio (0.0 - 1.0)
             y_ratio (float): Y coordinate ratio (0.0 - 1.0)
         """
+        if self.block_inputs:
+            logger.debug("DirectInput.move blocked")
+            return
+
         if not _HAS_PYDIRECTINPUT:
             logger.debug("[MOCK] DirectInput.move(%.3f, %.3f)", x_ratio, y_ratio)
             return
@@ -111,6 +116,10 @@ class DirectInput(IInputBackend):
             y_ratio (float): Y coordinate ratio (0.0 - 1.0)
             button (str): Mouse button to click ('left', 'right', 'middle')
         """
+        if self.block_inputs:
+            logger.debug("DirectInput.click blocked")
+            return
+
         if not _HAS_PYDIRECTINPUT:
             logger.debug("[MOCK] DirectInput.click(%.3f, %.3f, %s)", x_ratio, y_ratio, button)
             return
@@ -136,9 +145,18 @@ class DirectInput(IInputBackend):
         Simulates keyboard input.
 
         Args:
-            name (str): Key name (e.g. 'space', '1', 'f12')
+            name (str): Key name (e.g. 'v' to toggle inventory, '1', 'f12')
             action (str): Keyboard action ('press', 'down', 'up')
         """
+        if self.block_inputs and action != "up":
+            logger.debug("DirectInput.key blocked: key=%s, action=%s", name, action)
+            return
+
+        if action == "down":
+            self.pressed_keys.add(name)
+        elif action == "up":
+            self.pressed_keys.discard(name)
+
         if not _HAS_PYDIRECTINPUT:
             logger.debug("[MOCK] DirectInput.key(%s, %s)", name, action)
             return
