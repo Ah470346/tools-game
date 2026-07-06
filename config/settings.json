@@ -99,8 +99,8 @@
   "loot": {
     "enabled": true,
     "show_names_key": "a",
-    "whitelist": ["vàng", "vang"],
+    "whitelist": ["vàng", "vang", "vng", "vâng", "vaing", "vàn"],
     "blacklist": ["potion", "weak", "trash"],
-    "click_y_offset_pixels": 8
+    "click_y_offset_pixels": 20
   }
 }
