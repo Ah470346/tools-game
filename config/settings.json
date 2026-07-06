@@ -26,7 +26,10 @@
     "reassociate_delay_sec": 0.5,
     "reassociate_max_dist_ratio": 0.15,
     "panel_gone_confirm_sec": 0.3,
-    "target_give_up_sec": 6.0,
+    "blind_attack_max_sec": 3.0,
+    "blind_attack_max_dist_ratio": 0.15,
+    "engagement_max_sec": 45.0,
+    "next_target_anchor_sec": 5.0,
     "target_check": {
       "enabled": true,
       "check_pixel": [0.87, 0.20],
@@ -90,7 +93,8 @@
   "tracker": {
     "iou_threshold": 0.3,
     "max_lost_frames": 15,
-    "max_match_dist_ratio": 0.1
+    "max_match_dist_ratio": 0.1,
+    "coast_output_frames": 15
   },
   "ocr": {
     "enabled": true,

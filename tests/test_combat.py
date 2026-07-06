@@ -246,8 +246,13 @@ def test_combat_yolo_panel_visible_keeps_target(combat_config_yolo) -> None:
     ctrl = CombatController(capture=cap, simulator=inp, config=combat_config_yolo, detector=det)
 
     # Simulate having an active target
+    now = time.time()
     ctrl._active_target_id = 1
     ctrl._yolo_target_pos = [0.5, 0.5]
+    ctrl._last_yolo_target_time = now
+    ctrl._panel_last_seen_time = now
+    ctrl._last_pos_confirm_time = now
+    ctrl._engagement_start_time = now
 
     # Panel is visible → should return True and stay locked
     assert ctrl.has_target(red_frame) is True
@@ -316,15 +321,17 @@ def test_combat_yolo_panel_visible_only_player_no_click(combat_config_yolo) -> N
 
 def test_combat_yolo_stale_position_holds_fire(combat_config_yolo) -> None:
     """Regression: when YOLO stops confirming the target position (monster obscured)
-    while the panel is still visible, the bot must stop clicking (a frozen ground
-    coordinate walks the character away) but must NOT switch to another monster —
-    the anchor is kept so re-association can resume the same fight."""
+    while the panel is still visible, the bot must keep reporting has_target=True
+    (panel is authoritative) but execute_combat_actions must not click (stale
+    position without blind-attack eligibility)."""
     combat_config_yolo["target_check"] = {
         "enabled": True,
         "region": {"start": [0.0, 0.0], "end": [1.0, 1.0]},
         "min_red_ratio": 0.01,
     }
     combat_config_yolo["stale_target_timeout_sec"] = 1.5
+    combat_config_yolo["blind_attack_max_sec"] = 3.0
+    combat_config_yolo["blind_attack_max_dist_ratio"] = 0.15
     det = DummyDetector([])  # YOLO sees nothing anymore
     red_frame = np.zeros((100, 100, 3), dtype=np.uint8)
     red_frame[10:20, 10:20] = [0, 0, 200]  # Panel visible
@@ -334,30 +341,33 @@ def test_combat_yolo_stale_position_holds_fire(combat_config_yolo) -> None:
 
     now = time.time()
     ctrl._active_target_id = 99
-    ctrl._yolo_target_pos = [0.6, 0.6]
+    ctrl._yolo_target_pos = [0.6, 0.6]  # dist to center ~0.14 (within blind range)
     ctrl._last_yolo_target_time = now
     ctrl._panel_last_seen_time = now
-    # Position was last confirmed longer ago than the stale timeout
+    ctrl._engagement_start_time = now
+    # Position was last confirmed longer ago than the stale timeout but within blind window
     ctrl._last_pos_confirm_time = now - 2.0
 
-    assert ctrl.has_target(red_frame) is False
+    # Panel authoritative: has_target returns True (blind attack eligible)
+    assert ctrl.has_target(red_frame) is True
     # Engagement is kept (anchor + ID) — no switch while the panel is visible
     assert ctrl._yolo_target_pos == [0.6, 0.6]
     assert ctrl._active_target_id == 99
 
+    # But execute_combat_actions should click (blind attack)
     ctrl.execute_combat_actions()
-    assert inp.log == []
+    assert ("click", 0.6, 0.6, "left") in inp.log
 
 
-def test_combat_yolo_gives_up_after_long_blindness(combat_config_yolo) -> None:
-    """If YOLO cannot re-confirm the target for target_give_up_sec, the bot gives
-    up (and blacklists it) instead of idling forever on a stuck engagement."""
+def test_combat_yolo_engagement_max_sec_valve(combat_config_yolo) -> None:
+    """When engagement runs longer than engagement_max_sec, the bot clears the target
+    WITHOUT blacklisting (safety valve replaces old give-up timer)."""
     combat_config_yolo["target_check"] = {
         "enabled": True,
         "region": {"start": [0.0, 0.0], "end": [1.0, 1.0]},
         "min_red_ratio": 0.01,
     }
-    combat_config_yolo["target_give_up_sec"] = 6.0
+    combat_config_yolo["engagement_max_sec"] = 45.0
     det = DummyDetector([])
     red_frame = np.zeros((100, 100, 3), dtype=np.uint8)
     red_frame[10:20, 10:20] = [0, 0, 200]
@@ -370,12 +380,14 @@ def test_combat_yolo_gives_up_after_long_blindness(combat_config_yolo) -> None:
     ctrl._yolo_target_pos = [0.6, 0.6]
     ctrl._last_yolo_target_time = now
     ctrl._panel_last_seen_time = now
-    ctrl._last_pos_confirm_time = now - 7.0  # Blind past the give-up threshold
+    ctrl._last_pos_confirm_time = now
+    ctrl._engagement_start_time = now - 46.0  # Past 45s valve
 
     assert ctrl.has_target(red_frame) is False
     assert ctrl._active_target_id is None
     assert ctrl._yolo_target_pos is None
-    assert 99 in ctrl._blacklisted_targets
+    # Safety valve does NOT blacklist
+    assert 99 not in ctrl._blacklisted_targets
 
 
 def test_combat_yolo_reassociates_to_melee_monster_near_player(combat_config_yolo) -> None:
@@ -405,6 +417,7 @@ def test_combat_yolo_reassociates_to_melee_monster_near_player(combat_config_yol
     ctrl._last_yolo_target_time = now
     ctrl._panel_last_seen_time = now
     ctrl._last_pos_confirm_time = now - 0.6  # Coast delay elapsed
+    ctrl._engagement_start_time = now
 
     assert ctrl.has_target(red_frame) is True
     # Adopted the melee monster next to the character
@@ -435,6 +448,7 @@ def test_combat_yolo_panel_flicker_does_not_end_engagement(combat_config_yolo) -
     ctrl._last_yolo_target_time = now - 5.0  # Grace long expired (mid-fight)
     ctrl._panel_last_seen_time = now - 0.1   # Panel was seen an instant ago
     ctrl._last_pos_confirm_time = now
+    ctrl._engagement_start_time = now
 
     assert ctrl.has_target(black_frame) is True
     # Engagement survives the flicker: same target, not blacklisted
@@ -498,6 +512,8 @@ def test_combat_yolo_flicker_does_not_switch_target(combat_config_yolo) -> None:
     ctrl._yolo_target_pos = [0.6, 0.6]
     ctrl._last_yolo_target_time = now
     ctrl._last_pos_confirm_time = now  # Position confirmed just now → still coasting
+    ctrl._panel_last_seen_time = now
+    ctrl._engagement_start_time = now
 
     assert ctrl.has_target(red_frame) is True
     # Must keep the original target/position, not adopt the neighbor
@@ -531,6 +547,8 @@ def test_combat_yolo_reassociates_after_coast_delay(combat_config_yolo) -> None:
     ctrl._yolo_target_pos = [0.6, 0.6]
     ctrl._last_yolo_target_time = now
     ctrl._last_pos_confirm_time = now - 0.6  # Coast delay elapsed
+    ctrl._panel_last_seen_time = now
+    ctrl._engagement_start_time = now
 
     assert ctrl.has_target(red_frame) is True
     assert ctrl._active_target_id == 1  # Adopted the new track
@@ -547,6 +565,8 @@ def test_combat_yolo_reassociates_after_coast_delay(combat_config_yolo) -> None:
     ctrl2._yolo_target_pos = [0.6, 0.6]
     ctrl2._last_yolo_target_time = now
     ctrl2._last_pos_confirm_time = now - 0.6
+    ctrl2._panel_last_seen_time = now
+    ctrl2._engagement_start_time = now
 
     assert ctrl2.has_target(red_frame) is True
     assert ctrl2._active_target_id == 99
@@ -581,3 +601,230 @@ def test_combat_yolo_panel_gone_clears_target(combat_config_yolo) -> None:
     assert ctrl._active_target_id is not None  # New target acquired
     assert ctrl._yolo_target_pos == [0.6, 0.6]
     assert ("click", 0.6, 0.6, "left") in inp.log
+
+
+# --- Panel-authoritative targeting tests ---
+
+def test_occlusion_never_blacklists_while_panel_visible(combat_config_yolo) -> None:
+    """YOLO blind for 10s with panel still red: no blacklist, anchor kept,
+    has_target stays True, bot doesn't click a second monster."""
+    combat_config_yolo["target_check"] = {
+        "enabled": True,
+        "region": {"start": [0.0, 0.0], "end": [1.0, 1.0]},
+        "min_red_ratio": 0.01,
+    }
+    combat_config_yolo["stale_target_timeout_sec"] = 1.5
+    combat_config_yolo["blind_attack_max_sec"] = 3.0
+    combat_config_yolo["engagement_max_sec"] = 45.0
+
+    # Two monsters but detector returns neither (YOLO blind)
+    det = DummyDetector([])
+    red_frame = np.zeros((100, 100, 3), dtype=np.uint8)
+    red_frame[10:20, 10:20] = [0, 0, 200]  # Panel visible
+    cap = DummyCapture((0, 0, 0))
+    inp = MockInput()
+    ctrl = CombatController(capture=cap, simulator=inp, config=combat_config_yolo, detector=det)
+
+    now = time.time()
+    ctrl._active_target_id = 71
+    ctrl._yolo_target_pos = [0.55, 0.55]  # Near center
+    ctrl._last_yolo_target_time = now
+    ctrl._panel_last_seen_time = now
+    ctrl._engagement_start_time = now
+    ctrl._last_pos_confirm_time = now - 10.0  # Blind for 10s
+
+    # has_target returns True (panel authoritative, hold fire zone)
+    assert ctrl.has_target(red_frame) is True
+    # NOT blacklisted
+    assert 71 not in ctrl._blacklisted_targets
+    # Anchor kept
+    assert ctrl._active_target_id == 71
+    assert ctrl._yolo_target_pos == [0.55, 0.55]
+
+
+def test_blind_attack_window(combat_config_yolo) -> None:
+    """Position near center (0.55,0.55): between 1.5s-3.0s stale, blind attack
+    clicks at the last known position. Beyond 3.0s: stops clicking, still no blacklist."""
+    combat_config_yolo["target_check"] = {
+        "enabled": True,
+        "region": {"start": [0.0, 0.0], "end": [1.0, 1.0]},
+        "min_red_ratio": 0.01,
+    }
+    combat_config_yolo["stale_target_timeout_sec"] = 1.5
+    combat_config_yolo["blind_attack_max_sec"] = 3.0
+    combat_config_yolo["blind_attack_max_dist_ratio"] = 0.15
+    combat_config_yolo["engagement_max_sec"] = 45.0
+
+    det = DummyDetector([])
+    red_frame = np.zeros((100, 100, 3), dtype=np.uint8)
+    red_frame[10:20, 10:20] = [0, 0, 200]
+    cap = DummyCapture((0, 0, 0))
+    inp = MockInput()
+    ctrl = CombatController(capture=cap, simulator=inp, config=combat_config_yolo, detector=det)
+
+    now = time.time()
+    ctrl._active_target_id = 42
+    ctrl._yolo_target_pos = [0.55, 0.55]  # dist to center = 0.07
+    ctrl._last_yolo_target_time = now
+    ctrl._panel_last_seen_time = now
+    ctrl._engagement_start_time = now
+
+    # Within blind window (2.0s stale, < 3.0s)
+    ctrl._last_pos_confirm_time = now - 2.0
+    assert ctrl.has_target(red_frame) is True
+    assert ctrl._blind_attack_active is True
+
+    # execute_combat_actions should click
+    ctrl.execute_combat_actions()
+    assert ("click", 0.55, 0.55, "left") in inp.log
+
+    # Beyond blind window (4.0s stale, > 3.0s)
+    inp.log.clear()
+    ctrl._last_pos_confirm_time = now - 4.0
+    assert ctrl.has_target(red_frame) is True  # Panel still keeps engagement alive
+    assert ctrl._blind_attack_active is False
+
+    # execute_combat_actions should hold fire (stale + no blind)
+    ctrl.execute_combat_actions()
+    assert ("click", 0.55, 0.55, "left") not in inp.log
+    # Still not blacklisted
+    assert 42 not in ctrl._blacklisted_targets
+
+
+def test_blind_attack_refused_far_from_center(combat_config_yolo) -> None:
+    """Anchor at (0.2, 0.2): dist to center = 0.424 > 0.15, blind attack never triggers."""
+    combat_config_yolo["target_check"] = {
+        "enabled": True,
+        "region": {"start": [0.0, 0.0], "end": [1.0, 1.0]},
+        "min_red_ratio": 0.01,
+    }
+    combat_config_yolo["stale_target_timeout_sec"] = 1.5
+    combat_config_yolo["blind_attack_max_sec"] = 3.0
+    combat_config_yolo["blind_attack_max_dist_ratio"] = 0.15
+    combat_config_yolo["engagement_max_sec"] = 45.0
+
+    det = DummyDetector([])
+    red_frame = np.zeros((100, 100, 3), dtype=np.uint8)
+    red_frame[10:20, 10:20] = [0, 0, 200]
+    cap = DummyCapture((0, 0, 0))
+    inp = MockInput()
+    ctrl = CombatController(capture=cap, simulator=inp, config=combat_config_yolo, detector=det)
+
+    now = time.time()
+    ctrl._active_target_id = 50
+    ctrl._yolo_target_pos = [0.2, 0.2]  # Far from center
+    ctrl._last_yolo_target_time = now
+    ctrl._panel_last_seen_time = now
+    ctrl._engagement_start_time = now
+    ctrl._last_pos_confirm_time = now - 2.0  # Within blind time window
+
+    # has_target still True (panel authoritative) but blind attack NOT active
+    assert ctrl.has_target(red_frame) is True
+    assert ctrl._blind_attack_active is False
+
+    # Should NOT click (stale position, too far from center for blind)
+    ctrl.execute_combat_actions()
+    assert inp.log == []
+
+
+def test_reassociate_to_new_id_after_occlusion(combat_config_yolo) -> None:
+    """Monster reappears at slightly different position (dist 0.05) with new tracker ID
+    after occlusion. Should adopt the new ID and continue fighting."""
+    combat_config_yolo["target_check"] = {
+        "enabled": True,
+        "region": {"start": [0.0, 0.0], "end": [1.0, 1.0]},
+        "min_red_ratio": 0.01,
+    }
+    combat_config_yolo["reassociate_delay_sec"] = 0.5
+    combat_config_yolo["reassociate_max_dist_ratio"] = 0.12
+    combat_config_yolo["engagement_max_sec"] = 45.0
+
+    # New detection at (0.65, 0.62) — 0.05 from old (0.6, 0.6)
+    det = DummyDetector([
+        {"class_id": 0, "confidence": 0.9, "box": [0.65, 0.62, 0.1, 0.1]}
+    ])
+    red_frame = np.zeros((100, 100, 3), dtype=np.uint8)
+    red_frame[10:20, 10:20] = [0, 0, 200]
+    cap = DummyCapture((0, 0, 0))
+    inp = MockInput()
+    ctrl = CombatController(capture=cap, simulator=inp, config=combat_config_yolo, detector=det)
+
+    now = time.time()
+    ctrl._active_target_id = 99
+    ctrl._yolo_target_pos = [0.6, 0.6]
+    ctrl._last_yolo_target_time = now
+    ctrl._panel_last_seen_time = now
+    ctrl._engagement_start_time = now
+    ctrl._last_pos_confirm_time = now - 0.6  # Coast delay elapsed
+
+    assert ctrl.has_target(red_frame) is True
+    # Adopted new track ID (track_id=1 from DummyDetector)
+    assert ctrl._active_target_id == 1
+    assert ctrl._yolo_target_pos == [0.65, 0.62]
+
+
+def test_kill_picks_next_target_near_corpse(combat_config_yolo) -> None:
+    """After a kill at (0.3, 0.3), next target should prefer the monster nearer
+    to the corpse (0.34, 0.34) over the one nearer to screen center (0.52, 0.52)."""
+    combat_config_yolo["target_check"] = {
+        "enabled": True,
+        "region": {"start": [0.0, 0.0], "end": [1.0, 1.0]},
+        "min_red_ratio": 0.5,  # Panel not visible → kill path
+    }
+    combat_config_yolo["target_lock_grace_sec"] = 0.0
+    combat_config_yolo["panel_gone_confirm_sec"] = 0.0
+    combat_config_yolo["next_target_anchor_sec"] = 5.0
+    combat_config_yolo["engage_range_ratio"] = 1.0
+
+    det = DummyDetector([
+        {"class_id": 0, "confidence": 0.9, "box": [0.52, 0.52, 0.1, 0.1]},
+        {"class_id": 0, "confidence": 0.9, "box": [0.34, 0.34, 0.1, 0.1]},
+    ])
+    cap = DummyCapture((0, 0, 0))
+    inp = MockInput()
+    ctrl = CombatController(capture=cap, simulator=inp, config=combat_config_yolo, detector=det)
+
+    now = time.time()
+    # Simulate previous kill at (0.3, 0.3)
+    ctrl._active_target_id = 99
+    ctrl._yolo_target_pos = [0.3, 0.3]
+    ctrl._last_yolo_target_time = now - 5.0
+    ctrl._panel_last_seen_time = now - 1.0  # Panel was seen → real kill
+
+    frame = cap.grab_frame()
+    result = ctrl.has_target(frame)
+    assert result is False  # New target clicked, waiting for panel
+
+    # Should pick (0.34, 0.34) because _last_kill_pos = (0.3, 0.3) is the anchor
+    assert ctrl._yolo_target_pos == [0.34, 0.34]
+    assert ("click", 0.34, 0.34, "left") in inp.log
+
+
+def test_failed_lock_still_blacklists(combat_config_yolo) -> None:
+    """Regression guard: panel never goes red during lock grace → target still gets
+    blacklisted (failed lock behavior preserved from before panel-authority change)."""
+    combat_config_yolo["target_check"] = {
+        "enabled": True,
+        "region": {"start": [0.0, 0.0], "end": [1.0, 1.0]},
+        "min_red_ratio": 0.5,
+    }
+    combat_config_yolo["target_lock_grace_sec"] = 0.0
+    combat_config_yolo["panel_gone_confirm_sec"] = 0.0
+
+    det = DummyDetector([])
+    cap = DummyCapture((0, 0, 0))
+    inp = MockInput()
+    ctrl = CombatController(capture=cap, simulator=inp, config=combat_config_yolo, detector=det)
+
+    now = time.time()
+    ctrl._active_target_id = 77
+    ctrl._yolo_target_pos = [0.6, 0.6]
+    ctrl._last_yolo_target_time = now
+    # Panel was NEVER seen for this target
+    ctrl._panel_last_seen_time = now - 10.0
+
+    frame = cap.grab_frame()
+    ctrl.has_target(frame)
+
+    assert ctrl._active_target_id is None
+    assert 77 in ctrl._blacklisted_targets

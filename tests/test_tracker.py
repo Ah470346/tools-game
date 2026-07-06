@@ -170,3 +170,84 @@ def test_tracker_reassociation() -> None:
     assert len(tracks3) == 1
     assert tracks3[0]["track_id"] == 1
     assert tracks3[0]["box"] == [0.51, 0.51, 0.1, 0.1]
+
+
+# --- Coasting output tests ---
+
+def test_coasting_disabled_by_default() -> None:
+    """Default ctor: update([]) returns [] even when tracks exist internally."""
+    tracker = TargetTracker(iou_threshold=0.3, max_lost_frames=5)
+    tracker.update([{"class_id": 0, "confidence": 0.9, "box": [0.5, 0.5, 0.1, 0.1]}])
+    result = tracker.update([])
+    assert result == []
+
+
+def test_coasting_returns_lost_tracks() -> None:
+    """coast_output_frames>0: lost tracks appear with coasting=True and frozen box.
+    When re-detected, they switch back to coasting=False with the same ID."""
+    tracker = TargetTracker(iou_threshold=0.3, max_lost_frames=15,
+                            coast_output_frames=5)
+    # Frame 1: create track
+    t1 = tracker.update([{"class_id": 0, "confidence": 0.9, "box": [0.5, 0.5, 0.1, 0.1]}])
+    assert len(t1) == 1
+    assert t1[0]["coasting"] is False
+    assert t1[0]["track_id"] == 1
+
+    # Frame 2: detection gone → coasting
+    t2 = tracker.update([])
+    assert len(t2) == 1
+    assert t2[0]["coasting"] is True
+    assert t2[0]["track_id"] == 1
+    assert t2[0]["box"] == [0.5, 0.5, 0.1, 0.1]  # frozen
+
+    # Frame 3: re-detected at slightly shifted position → same ID, coasting=False
+    t3 = tracker.update([{"class_id": 0, "confidence": 0.9, "box": [0.51, 0.51, 0.1, 0.1]}])
+    assert len(t3) == 1
+    assert t3[0]["coasting"] is False
+    assert t3[0]["track_id"] == 1
+    assert t3[0]["box"] == [0.51, 0.51, 0.1, 0.1]
+
+
+def test_coasting_window_boundary() -> None:
+    """Track disappears from output after coast_output_frames, but its ID survives
+    in internal tracks until max_lost_frames and can be resurrected."""
+    tracker = TargetTracker(iou_threshold=0.3, max_lost_frames=10,
+                            coast_output_frames=3)
+    tracker.update([{"class_id": 0, "confidence": 0.9, "box": [0.5, 0.5, 0.1, 0.1]}])
+
+    # Frames 2-4: coasting (lost_count 1,2,3)
+    for i in range(3):
+        t = tracker.update([])
+        assert len(t) == 1, f"Frame {i+2}: expected 1 coasting track"
+        assert t[0]["coasting"] is True
+
+    # Frame 5: lost_count=4 > coast_output_frames=3 → not in output
+    t5 = tracker.update([])
+    assert len(t5) == 0
+    # But track still alive internally
+    assert len(tracker.tracks) == 1
+    assert tracker.tracks[0].lost_count == 4
+
+    # Frame 6: re-detected within max_lost_frames → same ID resurrects
+    t6 = tracker.update([{"class_id": 0, "confidence": 0.9, "box": [0.51, 0.51, 0.1, 0.1]}])
+    assert len(t6) == 1
+    assert t6[0]["track_id"] == 1
+    assert t6[0]["coasting"] is False
+
+
+def test_coasting_on_empty_detections_branch() -> None:
+    """Exercises the early-return path in update() when detections is empty.
+    Coasting tracks must still appear via _build_output()."""
+    tracker = TargetTracker(iou_threshold=0.3, max_lost_frames=15,
+                            coast_output_frames=5)
+    # Create two tracks
+    tracker.update([
+        {"class_id": 0, "confidence": 0.9, "box": [0.3, 0.3, 0.1, 0.1]},
+        {"class_id": 0, "confidence": 0.8, "box": [0.7, 0.7, 0.1, 0.1]},
+    ])
+    # Empty frame → both tracks coast
+    result = tracker.update([])
+    assert len(result) == 2
+    assert all(t["coasting"] is True for t in result)
+    ids = {t["track_id"] for t in result}
+    assert ids == {1, 2}

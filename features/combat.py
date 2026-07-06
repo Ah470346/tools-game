@@ -9,7 +9,7 @@ import json
 import logging
 import os
 import time
-from typing import Dict, Optional, Any
+from typing import Dict, List, Optional, Any
 import numpy as np
 
 from backends.input_base import IInputBackend
@@ -91,8 +91,10 @@ class CombatController:
         iou_threshold = tracker_cfg.get("iou_threshold", 0.3)
         max_lost_frames = tracker_cfg.get("max_lost_frames", 15)
         max_match_dist_ratio = tracker_cfg.get("max_match_dist_ratio", 0.0)
+        coast_output_frames = tracker_cfg.get("coast_output_frames", 0)
         self.tracker = TargetTracker(iou_threshold=iou_threshold, max_lost_frames=max_lost_frames,
-                                     max_match_dist_ratio=max_match_dist_ratio)
+                                     max_match_dist_ratio=max_match_dist_ratio,
+                                     coast_output_frames=coast_output_frames)
 
         # Track targets detected via YOLO
         self._yolo_target_pos: Optional[list] = None
@@ -111,8 +113,21 @@ class CombatController:
         # Panel debounce: a single bad panel read must not end the engagement.
         self._panel_last_seen_time = 0.0
         self._panel_gone_confirm_sec = self.config.get("panel_gone_confirm_sec", 0.3)
-        # Give up on a target only after YOLO has been blind to it for this long.
-        self._give_up_sec = self.config.get("target_give_up_sec", 6.0)
+
+        # Panel-authoritative: engagement safety valve replaces the old give-up timer.
+        self._engagement_max_sec = self.config.get("engagement_max_sec", 45.0)
+        self._engagement_start_time = 0.0
+
+        # Blind attack: keep clicking last-known position when YOLO is blind but panel
+        # confirms the monster is alive and near the player character.
+        self._blind_attack_max_sec = self.config.get("blind_attack_max_sec", 3.0)
+        self._blind_attack_max_dist = self.config.get("blind_attack_max_dist_ratio", 0.15)
+        self._blind_attack_active = False
+
+        # After a kill, use the corpse position as anchor for next-target selection.
+        self._next_target_anchor_sec = self.config.get("next_target_anchor_sec", 5.0)
+        self._last_kill_pos: Optional[list] = None
+        self._last_kill_time = 0.0
 
         # Blacklist for unreachable/stuck targets
         self._blacklisted_targets: dict[int, float] = {}
@@ -214,27 +229,45 @@ class CombatController:
         in_exclusion_zone = (dx ** 2 + (dy / 2.0) ** 2) <= (self._exclusion_zone ** 2)
         return is_player or in_exclusion_zone
 
-    def _select_best_target(self, tracked: list) -> Optional[dict]:
+    def _lock_confirmed(self) -> bool:
+        """Returns True if the target panel was seen after the current target was acquired."""
+        return self._panel_last_seen_time >= self._last_yolo_target_time
+
+    def _recent_kill_anchor(self) -> Optional[list]:
+        """Returns the last kill position if recent enough, else None."""
+        if (self._last_kill_pos is not None
+                and time.time() - self._last_kill_time < self._next_target_anchor_sec):
+            return self._last_kill_pos
+        return None
+
+    def _select_best_target(self, tracked: list,
+                            anchor: Optional[List[float]] = None) -> Optional[dict]:
         """Selects the closest valid monster from tracked detections.
 
-        Filters out blacklisted tracks and the player character (screen center),
-        then returns the track nearest to center that is within engage range.
+        Filters out blacklisted tracks, coasting tracks, and the player character
+        (screen center), then returns the track nearest to *anchor* (or screen
+        center if no anchor) that is within engage range.
 
         Args:
             tracked (list): Active tracks from the TargetTracker.
+            anchor (list, optional): [x, y] anchor point for distance sorting.
+                Falls back to screen center (0.5, 0.5).
 
         Returns:
             Optional[dict]: The best track, or None if no valid target is available.
         """
+        ax, ay = anchor if anchor else [0.5, 0.5]
         candidates = [t for t in tracked
                       if t["track_id"] not in self._blacklisted_targets
+                      and not t.get("coasting", False)
                       and not self._is_player_track(t)]
 
         if not candidates:
             return None
 
         best = min(candidates, key=lambda t: np.sqrt(
-            (t["box"][0] - 0.5) ** 2 + (t["box"][1] - 0.5) ** 2))
+            (t["box"][0] - ax) ** 2 + (t["box"][1] - ay) ** 2))
+        # Engage range is always measured from screen center (limits character travel)
         dist = np.sqrt((best["box"][0] - 0.5) ** 2 + (best["box"][1] - 0.5) ** 2)
         engage_range = self.config.get("engage_range_ratio", 1.0)
         if dist > engage_range:
@@ -281,95 +314,113 @@ class CombatController:
                     if self.detector is not None:
                         detections = self.detector.detect(frame)
                         tracked = self.tracker.update(detections)
+                        visible = [t for t in tracked if not t.get("coasting", False)]
+                        coasting = [t for t in tracked if t.get("coasting", False)]
 
-                        if self._active_target_id is not None and tracked:
-                            match = next((t for t in tracked
+                        if self._active_target_id is not None:
+                            # 1. Active ID in visible tracks → update pos + confirm time
+                            match = next((t for t in visible
                                           if t["track_id"] == self._active_target_id), None)
                             if match:
                                 self._yolo_target_pos = [match["box"][0], match["box"][1]]
                                 self._last_pos_confirm_time = now
                                 logger.debug("CombatController: Tracking target ID %d at (%.3f, %.3f)",
                                              self._active_target_id, match["box"][0], match["box"][1])
-                            elif (self._yolo_target_pos and
-                                  now - self._last_pos_confirm_time >= self._reassoc_delay):
-                                # Track ID lost beyond the coast delay (not just a one-frame
-                                # detection flicker) — re-associate to the closest valid track
-                                # near the old position. Switching on a single missed frame
-                                # would jump to a neighboring monster while the current one
-                                # is still alive.
-                                # No player filter here: a melee monster fights right next to
-                                # the character (inside the exclusion zone); filtering it out
-                                # would abandon the current fight. The tight distance-to-last-
-                                # position check is what keeps us on the same monster.
-                                candidates = [t for t in tracked
-                                              if t["track_id"] not in self._blacklisted_targets]
-                                if candidates:
-                                    best = min(candidates, key=lambda t: np.sqrt(
-                                        (t["box"][0] - self._yolo_target_pos[0]) ** 2 +
-                                        (t["box"][1] - self._yolo_target_pos[1]) ** 2))
-                                    d = np.sqrt((best["box"][0] - self._yolo_target_pos[0]) ** 2 +
-                                                (best["box"][1] - self._yolo_target_pos[1]) ** 2)
-                                    if d < self._reassoc_max_dist:
-                                        self._active_target_id = best["track_id"]
-                                        self._yolo_target_pos = [best["box"][0], best["box"][1]]
-                                        self._last_pos_confirm_time = now
-                                        logger.info("CombatController: Re-associated to track ID %d",
-                                                    self._active_target_id)
+                            else:
+                                # 2. Active ID in coasting tracks → update pos from memory,
+                                #    do NOT refresh confirm_time (position is "remembered")
+                                coast_match = next((t for t in coasting
+                                                    if t["track_id"] == self._active_target_id), None)
+                                if coast_match:
+                                    self._yolo_target_pos = [coast_match["box"][0], coast_match["box"][1]]
+                                    logger.debug("CombatController: Coasting target ID %d at (%.3f, %.3f)",
+                                                 self._active_target_id,
+                                                 coast_match["box"][0], coast_match["box"][1])
+                                elif (self._yolo_target_pos and
+                                      now - self._last_pos_confirm_time >= self._reassoc_delay):
+                                    # 3. Re-associate: only from visible tracks (not coasting)
+                                    candidates = [t for t in visible
+                                                  if t["track_id"] not in self._blacklisted_targets]
+                                    if candidates:
+                                        best = min(candidates, key=lambda t: np.sqrt(
+                                            (t["box"][0] - self._yolo_target_pos[0]) ** 2 +
+                                            (t["box"][1] - self._yolo_target_pos[1]) ** 2))
+                                        d = np.sqrt((best["box"][0] - self._yolo_target_pos[0]) ** 2 +
+                                                    (best["box"][1] - self._yolo_target_pos[1]) ** 2)
+                                        if d < self._reassoc_max_dist:
+                                            self._active_target_id = best["track_id"]
+                                            self._yolo_target_pos = [best["box"][0], best["box"][1]]
+                                            self._last_pos_confirm_time = now
+                                            logger.info("CombatController: Re-associated to track ID %d",
+                                                        self._active_target_id)
 
-                        # Panel is visible but we are not engaged with anything
-                        # (e.g. bootstrap, or a lingering panel after the previous kill).
-                        # Re-acquire the nearest real monster from YOLO. Only when NOT
-                        # engaged — while a target is engaged, switching monsters is
-                        # forbidden until its panel disappears (i.e. it dies).
+                        # 4. Bootstrap: panel visible but not engaged with anything
                         if self._active_target_id is None and self._yolo_target_pos is None:
-                            best = self._select_best_target(tracked)
+                            best = self._select_best_target(tracked, anchor=self._recent_kill_anchor())
                             if best is not None:
                                 self._active_target_id = best["track_id"]
                                 self._yolo_target_pos = [best["box"][0], best["box"][1]]
                                 self._last_yolo_target_time = now
                                 self._last_pos_confirm_time = now
+                                self._engagement_start_time = now
                                 logger.info("CombatController: Panel visible without lock — "
                                             "re-acquired target ID %d at (%.3f, %.3f)",
                                             self._active_target_id, best["box"][0], best["box"][1])
                 except Exception as e:
                     logger.error("CombatController: YOLO position update error: %s", e)
 
-                # Only report an active target when we actually know where to click.
-                # Never return True without a position — that would trigger a click at
-                # click_position (screen center = the player character).
+                # Decision: report target status based on panel authority
                 if self._yolo_target_pos is not None:
                     since_confirm = now - self._last_pos_confirm_time
-                    if since_confirm > self._give_up_sec:
-                        # YOLO has been blind to this monster for a very long time —
-                        # give up so the bot doesn't idle forever, and blacklist it.
-                        logger.warning("CombatController: Target ID %s unseen for >%.1fs. "
-                                       "Giving up and blacklisting.",
-                                       self._active_target_id, self._give_up_sec)
-                        if self._active_target_id is not None:
-                            self._blacklisted_targets[self._active_target_id] = now
-                        self._active_target_id = None
-                        self._yolo_target_pos = None
-                        return False
-                    if since_confirm > self._stale_timeout:
-                        # Monster temporarily lost (obscured by the character, animation).
-                        # Hold fire — clicking the frozen coordinate would walk the
-                        # character away — but keep the anchor so re-association can
-                        # resume this fight. Do NOT switch to another monster: the
-                        # panel says this one is still alive.
+
+                    if self._lock_confirmed():
+                        # PANEL IS THE SOURCE OF TRUTH — never give-up/blacklist here
+
+                        # Safety valve: engagement running abnormally long
+                        if now - self._engagement_start_time > self._engagement_max_sec:
+                            logger.warning("CombatController: Engagement exceeded %.0fs safety valve. "
+                                           "Clearing target ID %s (NOT blacklisting).",
+                                           self._engagement_max_sec, self._active_target_id)
+                            self._active_target_id = None
+                            self._yolo_target_pos = None
+                            self._blind_attack_active = False
+                            return False
+
+                        if since_confirm <= self._stale_timeout:
+                            # Fresh position — attack normally
+                            self._blind_attack_active = False
+                            return True
+
+                        # Position is stale: consider blind attack
+                        if (panel_visible
+                                and self._pos_dist_to_center() <= self._blind_attack_max_dist
+                                and since_confirm <= self._blind_attack_max_sec):
+                            self._blind_attack_active = True
+                            logger.debug("CombatController: Blind attack on target ID %s "
+                                         "(stale %.1fs, dist_to_center=%.3f)",
+                                         self._active_target_id, since_confirm,
+                                         self._pos_dist_to_center())
+                            return True
+
+                        # Stale beyond blind window — hold fire but keep engagement
+                        self._blind_attack_active = False
                         logger.debug("CombatController: Target ID %s position stale "
-                                     "(%.1fs). Holding fire.",
+                                     "(%.1fs). Holding fire (panel authoritative).",
                                      self._active_target_id, since_confirm)
+                        return True  # Keep FSM in FARMING — panel says target is alive
+
+                    else:
+                        # Lock not yet confirmed (grace window)
+                        self._blind_attack_active = False
+                        if since_confirm <= self._stale_timeout:
+                            return True
                         return False
-                    return True
                 return False
 
             # Panel not visible and grace expired — target died or was lost (or failed to lock)
+            self._blind_attack_active = False
             if self._active_target_id is not None:
-                # Blacklist ONLY if the panel never showed up for this target (the lock
-                # click failed — stuck/unreachable monster). If the panel DID appear
-                # after acquisition, the fight happened and the panel disappearing
-                # simply means the monster died — a normal kill, never blacklist.
-                lock_succeeded = self._panel_last_seen_time >= self._last_yolo_target_time
+                lock_succeeded = self._lock_confirmed()
                 if not lock_succeeded:
                     logger.warning("CombatController: Failed to lock target ID %d. Blacklisting for %.1fs.",
                                    self._active_target_id, self._blacklist_duration)
@@ -377,6 +428,10 @@ class CombatController:
                 else:
                     logger.info("CombatController: Target panel gone (target died). "
                                 "Clearing target ID %d.", self._active_target_id)
+                    # Record kill position for anchor-based next-target selection
+                    if self._yolo_target_pos is not None:
+                        self._last_kill_pos = list(self._yolo_target_pos)
+                        self._last_kill_time = now
                 self._active_target_id = None
                 self._yolo_target_pos = None
 
@@ -393,8 +448,7 @@ class CombatController:
                     detections = self.detector.detect(frame)
                     tracked = self.tracker.update(detections)
 
-                    # Pick the closest valid monster (excludes player/blacklist/out-of-range)
-                    best = self._select_best_target(tracked)
+                    best = self._select_best_target(tracked, anchor=self._recent_kill_anchor())
                     if best is not None:
                         dist = np.sqrt((best["box"][0] - 0.5) ** 2 +
                                        (best["box"][1] - 0.5) ** 2)
@@ -402,6 +456,7 @@ class CombatController:
                         self._yolo_target_pos = [best["box"][0], best["box"][1]]
                         self._last_yolo_target_time = now
                         self._last_pos_confirm_time = now
+                        self._engagement_start_time = now
                         logger.info("CombatController: Clicking new target ID %d at (%.3f, %.3f), dist=%.3f",
                                     self._active_target_id, best["box"][0], best["box"][1], dist)
                         self.input.click(best["box"][0], best["box"][1], button="left")
@@ -410,6 +465,13 @@ class CombatController:
                 logger.error("CombatController: YOLO target search error: %s", e)
 
             return False
+
+    def _pos_dist_to_center(self) -> float:
+        """Distance from current target position to screen center."""
+        if self._yolo_target_pos is None:
+            return float('inf')
+        return float(np.sqrt((self._yolo_target_pos[0] - 0.5) ** 2 +
+                             (self._yolo_target_pos[1] - 0.5) ** 2))
 
     def execute_combat_actions(self) -> None:
         """
@@ -424,7 +486,7 @@ class CombatController:
                 logger.debug("CombatController: No YOLO target position; skipping attack "
                              "to avoid clicking the player character.")
                 return
-            if now - self._last_pos_confirm_time > self._stale_timeout:
+            if now - self._last_pos_confirm_time > self._stale_timeout and not self._blind_attack_active:
                 logger.debug("CombatController: Target position stale; holding fire.")
                 return
             cx, cy = self._yolo_target_pos

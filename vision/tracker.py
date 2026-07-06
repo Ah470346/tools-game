@@ -58,7 +58,8 @@ class TargetTracker:
     """
 
     def __init__(self, iou_threshold: float = 0.3, max_lost_frames: int = 15,
-                 max_match_dist_ratio: float = 0.0) -> None:
+                 max_match_dist_ratio: float = 0.0,
+                 coast_output_frames: int = 0) -> None:
         """
         Initializes the target tracker.
 
@@ -67,10 +68,14 @@ class TargetTracker:
             max_lost_frames (int): Maximum consecutive frames a track can be lost before deletion.
             max_match_dist_ratio (float): Fallback association by center distance (normalized)
                 for pairs that IoU could not match. 0.0 disables the fallback.
+            coast_output_frames (int): If >0, tracks with 0 < lost_count <= this value
+                are included in the output with ``coasting=True`` and their last-known box.
+                0 disables coasting output (default, preserving legacy behaviour).
         """
         self.iou_threshold = iou_threshold
         self.max_lost_frames = max_lost_frames
         self.max_match_dist_ratio = max_match_dist_ratio
+        self.coast_output_frames = coast_output_frames
         self.next_track_id = 1
         self.tracks: List[Track] = []
 
@@ -91,7 +96,7 @@ class TargetTracker:
                 track.lost_count += 1
             # Remove expired tracks
             self.tracks = [t for t in self.tracks if t.lost_count <= self.max_lost_frames]
-            return []
+            return self._build_output()
 
         # 2. Match existing tracks with detections using IoU matrix
         num_tracks = len(self.tracks)
@@ -194,14 +199,33 @@ class TargetTracker:
         self.tracks = [t for t in self.tracks if t.lost_count <= self.max_lost_frames]
 
         # 7. Return active (currently visible) tracks formatted as detections
-        active_tracks = []
+        return self._build_output()
+
+    def _build_output(self) -> List[Dict[str, Any]]:
+        """Builds the output list from current tracks.
+
+        Visible tracks (lost_count == 0) always appear with ``coasting=False``.
+        If ``coast_output_frames > 0``, tracks with
+        ``0 < lost_count <= coast_output_frames`` are appended with
+        ``coasting=True`` and their last-known (frozen) box.
+        """
+        result: List[Dict[str, Any]] = []
         for track in self.tracks:
             if track.lost_count == 0:
-                active_tracks.append({
+                result.append({
                     "class_id": track.class_id,
                     "confidence": track.confidence,
                     "box": track.box,
-                    "track_id": track.track_id
+                    "track_id": track.track_id,
+                    "coasting": False,
                 })
-
-        return active_tracks
+            elif (self.coast_output_frames > 0
+                  and 0 < track.lost_count <= self.coast_output_frames):
+                result.append({
+                    "class_id": track.class_id,
+                    "confidence": track.confidence,
+                    "box": track.box,
+                    "track_id": track.track_id,
+                    "coasting": True,
+                })
+        return result
