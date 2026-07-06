@@ -124,26 +124,71 @@ class DirectCapture(ICaptureBackend):
 
     def _grab_dxcam(self) -> np.ndarray:
         """Grabs a frame using DXcam Desktop Duplication."""
-        region = self._get_region()  # (left, top, right, bottom)
+        try:
+            region = self._get_region()  # (left, top, right, bottom)
+        except RuntimeError:
+            raise
+        except Exception as e:
+            logger.error("DXcam failed to get region: %s", e)
+            return np.zeros((600, 800, 3), dtype=np.uint8)
 
-        # Create or recycle camera.  dxcam.create() is cheap if reused.
+        l, t, r, b = region
+        
+        # 1. Check for minimized window
+        if r - l <= 0 or b - t <= 0:
+            logger.warning("Game window is minimized or invalid size (%dx%d)", r - l, b - t)
+            return np.zeros((600, 800, 3), dtype=np.uint8)
+
+        # 2. Get screen size dynamically to clamp region coordinates
+        import sys
+        max_w = 1920
+        max_h = 1080
+        if sys.platform == "win32":
+            try:
+                import win32api
+                max_w = win32api.GetSystemMetrics(0)
+                max_h = win32api.GetSystemMetrics(1)
+            except Exception:
+                pass
+
+        # Clamp region to screen bounds to prevent DXcam ValueError
+        l_clamp = max(0, min(max_w, l))
+        t_clamp = max(0, min(max_h, t))
+        r_clamp = max(0, min(max_w, r))
+        b_clamp = max(0, min(max_h, b))
+
+        # Check if the clamped region is empty
+        if r_clamp - l_clamp <= 0 or b_clamp - t_clamp <= 0:
+            logger.warning("Clamped region is empty: (%d, %d, %d, %d)", l_clamp, t_clamp, r_clamp, b_clamp)
+            return np.zeros((600, 800, 3), dtype=np.uint8)
+
+        region_clamped = (l_clamp, t_clamp, r_clamp, b_clamp)
+
+        # Create or recycle camera.
         if self._camera is None:
             self._camera = dxcam.create(output_color="BGR")
 
-        frame = self._camera.grab(region=region, new_frame_only=False)
+        try:
+            frame = self._camera.grab(region=region_clamped, new_frame_only=False)
+        except Exception as e:
+            logger.warning("DXcam grab raised exception: %s. Re-creating camera...", e)
+            try:
+                self._camera = dxcam.create(output_color="BGR")
+                frame = self._camera.grab(region=region_clamped, new_frame_only=False)
+            except Exception as e2:
+                logger.error("DXcam grab failed even after recreation: %s", e2)
+                frame = None
+
         if frame is None:
             # Fallback to last successful frame if available
             if self._last_frame is not None:
-                l, t, r, b = region
-                target_shape = (b - t, r - l, 3)
+                target_shape = (b_clamp - t_clamp, r_clamp - l_clamp, 3)
                 if self._last_frame.shape == target_shape:
                     return self._last_frame
 
             logger.warning("DXcam returned None frame; returning black placeholder.")
-            l, t, r, b = region
-            return np.zeros((b - t, r - l, 3), dtype=np.uint8)
+            return np.zeros((b_clamp - t_clamp, r_clamp - l_clamp, 3), dtype=np.uint8)
 
-        # Cache the successful frame
         self._last_frame = frame
         return frame
 
