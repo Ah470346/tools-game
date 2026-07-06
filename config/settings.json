@@ -97,7 +97,7 @@
     }
   },
   "loot": {
-    "enabled": true,
+    "enabled": false,
     "show_names_key": "a",
     "whitelist": ["vàng", "vang", "vng", "vâng", "vaing", "vàn"],
     "blacklist": ["potion", "weak", "trash"],

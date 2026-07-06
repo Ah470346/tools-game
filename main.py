@@ -214,9 +214,9 @@ def run_bot(active: bool = False, loop_delay: float = 0.1, max_duration: Optiona
                 # Execute combat logic if inputs are not blocked
                 if not input_backend.block_inputs:
                     is_attacking = combat_controller.run_combat_cycle()
-                    # Transition to LOOTING if we were attacking but now target is lost/dead, respecting loot cooldown (e.g. 8s)
+                    # Transition to LOOTING if we were attacking but now target is lost/dead, respecting loot cooldown (e.g. 8s) and loot collector status
                     if was_attacking and not is_attacking:
-                        if current_time - last_loot_time >= 8.0:
+                        if loot_collector.enabled and (current_time - last_loot_time >= 8.0):
                             fsm.transition_to("LOOTING", "Target eliminated, checking ground loot")
                             last_loot_time = current_time
                     was_attacking = is_attacking
