@@ -108,7 +108,7 @@ def test_loot_collector_cycle(mock_find_labels, loot_config) -> None:
     # Check key logs:
     # 1. Holding 'a' down: key('a', 'down')
     # 2. Releasing 'a' up: key('a', 'up')
-    # 3. Click at center of (100, 100, 100, 20) -> xc = 150, yc = 110. In 1000x1000, xc_norm = 0.15, yc_norm = 0.11
+    # 3. Click below (100, 100, 100, 20) -> xc = 150, yc = 120 + 8 = 128. In 1000x1000, xc_norm = 0.15, yc_norm = 0.128
     assert ("key", "a", "down") in inp.log
     assert ("key", "a", "up") in inp.log
-    assert ("click", 0.15, 0.11, "left") in inp.log
+    assert ("click", 0.15, 0.128, "left") in inp.log

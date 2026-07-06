@@ -99,7 +99,8 @@
   "loot": {
     "enabled": true,
     "show_names_key": "a",
-    "whitelist": ["celesto", "devine", "mirage", "cel", "gold", "sheltom", "perfect"],
-    "blacklist": ["potion", "weak", "trash"]
+    "whitelist": ["vàng", "vang"],
+    "blacklist": ["potion", "weak", "trash"],
+    "click_y_offset_pixels": 8
   }
 }

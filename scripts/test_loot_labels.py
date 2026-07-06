@@ -127,20 +127,20 @@ def run_simulated_loot(collector: LootCollector) -> None:
     frame[:, :] = [40, 40, 40] # Dark gray grass/terrain simulation
 
     # Add mock labels (gray boxes with white/yellow borders and text)
-    # Box 1: Celesto Sheltom (whitelisted)
-    cv2.rectangle(frame, (100, 100), (280, 122), (80, 80, 80), -1)
-    cv2.rectangle(frame, (100, 100), (280, 122), (180, 180, 180), 1)
-    cv2.putText(frame, "Celesto Sheltom", (110, 116), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
+    # Box 1: 87 vàng (whitelisted)
+    cv2.rectangle(frame, (100, 100), (250, 125), (80, 80, 80), -1)
+    cv2.rectangle(frame, (100, 100), (250, 125), (180, 180, 180), 1)
+    cv2.putText(frame, "87 Vang", (115, 118), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
     # Box 2: Weak HP potion (blacklisted)
     cv2.rectangle(frame, (350, 200), (510, 222), (80, 80, 80), -1)
     cv2.rectangle(frame, (350, 200), (510, 222), (180, 180, 180), 1)
     cv2.putText(frame, "Weak HP potion", (360, 216), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
 
-    # Box 3: Gold [1500] (whitelisted)
-    cv2.rectangle(frame, (200, 400), (330, 422), (80, 80, 80), -1)
-    cv2.rectangle(frame, (200, 400), (330, 422), (180, 180, 180), 1)
-    cv2.putText(frame, "Gold 1500", (210, 416), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
+    # Box 3: Celesto Sheltom (not in whitelist anymore)
+    cv2.rectangle(frame, (200, 400), (380, 422), (80, 80, 80), -1)
+    cv2.rectangle(frame, (200, 400), (380, 422), (180, 180, 180), 1)
+    cv2.putText(frame, "Celesto Sheltom", (210, 416), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
 
     # 1. Run detection
     label_boxes = find_item_labels(frame)
@@ -162,9 +162,18 @@ def run_simulated_loot(collector: LootCollector) -> None:
             color = (0, 255, 0) if is_match else (0, 0, 255)
             status_text = "PICKUP (Whitelist Match)" if is_match else "IGNORE (Blacklisted/Rác)"
             
-            print(f"  Detected Box: '{text}' -> {status_text} at center ({x + w//2}, {y + h//2})")
+            # Get offset click point
+            y_offset = collector.config.get("click_y_offset_pixels", 8)
+            xc_click = x + w // 2
+            yc_click = y + h + y_offset
+            
+            print(f"  Detected Box: '{text}' -> {status_text} (Click coordinate: {xc_click}, {yc_click})")
             cv2.rectangle(output_canvas, (x, y), (x + w, y + h), color, 2)
             cv2.putText(output_canvas, f"{text}", (x, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
+            
+            # Draw target click indicator
+            cv2.circle(output_canvas, (xc_click, yc_click), 3, (0, 255, 255), -1) # Yellow dot
+            cv2.line(output_canvas, (xc_click, y + h), (xc_click, yc_click), (0, 255, 255), 1) # Line from bottom to dot
         else:
             cv2.rectangle(output_canvas, (x, y), (x + w, y + h), (255, 0, 0), 1)
 

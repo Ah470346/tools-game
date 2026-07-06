@@ -135,9 +135,13 @@ class LootCollector:
                     logger.info("LootCollector: Attempting to collect whitelisted item: '%s'", text)
                     self.input.key(self.show_names_key, "up")
                     
-                    # Calculate center coordinates as ratio
-                    xc_ratio = (x + w / 2) / width
-                    yc_ratio = (y + h / 2) / height
+                    # Calculate click coordinate: center horizontally, immediately below the bottom edge vertically
+                    y_offset = self.config.get("click_y_offset_pixels", 8)
+                    xc_click = x + w / 2
+                    yc_click = y + h + y_offset
+
+                    xc_ratio = xc_click / width
+                    yc_ratio = yc_click / height
 
                     # Move and click
                     self.input.click(xc_ratio, yc_ratio, button="left")
