@@ -71,10 +71,13 @@ def find_item_labels(frame: np.ndarray) -> List[Tuple[int, int, int, int]]:
 
         # 4. Filter by typical item text box dimensions on 1024x768 / 1920x1080 screens:
         # Width: 30 to 250px, Height: 10 to 35px, Aspect Ratio: 2.0 to 12.0
+        # Exclude HUD / UI elements by keeping y within gameplay area (15% to 80% screen height)
+        height_limit = frame.shape[0]
         if 30 <= w <= 250 and 10 <= h <= 35:
             aspect_ratio = float(w) / float(h)
             if 2.0 <= aspect_ratio <= 12.0:
-                boxes.append((x, y, w, h))
+                if 0.15 * height_limit <= y <= 0.8 * height_limit:
+                    boxes.append((x, y, w, h))
 
     # 5. Non-Maximum Suppression (NMS) to eliminate duplicate/nested overlapping boxes
     cleaned_boxes = []
