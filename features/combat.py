@@ -106,6 +106,12 @@ class CombatController:
         self._reassoc_delay = self.config.get("reassociate_delay_sec", 0.5)
         self._reassoc_max_dist = self.config.get("reassociate_max_dist_ratio", 0.08)
 
+        # Panel debounce: a single bad panel read must not end the engagement.
+        self._panel_last_seen_time = 0.0
+        self._panel_gone_confirm_sec = self.config.get("panel_gone_confirm_sec", 0.3)
+        # Give up on a target only after YOLO has been blind to it for this long.
+        self._give_up_sec = self.config.get("target_give_up_sec", 6.0)
+
         # Blacklist for unreachable/stuck targets
         self._blacklisted_targets: dict[int, float] = {}
         self._blacklist_duration = self.config.get("blacklist_duration_sec", 15.0)
@@ -253,12 +259,20 @@ class CombatController:
         elif self.target_source == "yolo":
             now = time.time()
             panel_visible = self._is_target_panel_visible(frame)
+            if panel_visible:
+                self._panel_last_seen_time = now
 
             # Grace period: just clicked a new target, panel may not appear instantly
             is_grace = (self._yolo_target_pos is not None and
                         now - self._last_yolo_target_time < self._lock_grace_sec)
 
-            if panel_visible or is_grace:
+            # Debounce: while engaged, a single missed panel read (red-ratio flicker)
+            # must not be treated as the target's death — that would switch monsters
+            # mid-fight and blacklist one that is still alive.
+            panel_recent = (self._active_target_id is not None and
+                            now - self._panel_last_seen_time < self._panel_gone_confirm_sec)
+
+            if panel_visible or is_grace or panel_recent:
                 # Target is alive in-game — stay locked, update click position from YOLO
                 try:
                     self._init_detector()
@@ -281,9 +295,12 @@ class CombatController:
                                 # near the old position. Switching on a single missed frame
                                 # would jump to a neighboring monster while the current one
                                 # is still alive.
+                                # No player filter here: a melee monster fights right next to
+                                # the character (inside the exclusion zone); filtering it out
+                                # would abandon the current fight. The tight distance-to-last-
+                                # position check is what keeps us on the same monster.
                                 candidates = [t for t in tracked
-                                              if t["track_id"] not in self._blacklisted_targets
-                                              and not self._is_player_track(t)]
+                                              if t["track_id"] not in self._blacklisted_targets]
                                 if candidates:
                                     best = min(candidates, key=lambda t: np.sqrt(
                                         (t["box"][0] - self._yolo_target_pos[0]) ** 2 +
@@ -297,12 +314,12 @@ class CombatController:
                                         logger.info("CombatController: Re-associated to track ID %d",
                                                     self._active_target_id)
 
-                        # Panel is visible but we have no confirmed target position
-                        # (e.g. previous target just died and its panel still lingers).
-                        # Re-acquire the nearest real monster from YOLO instead of leaving
-                        # the position unset, which would make execute_combat_actions fall
-                        # back to screen center and attack the player character.
-                        if self._yolo_target_pos is None:
+                        # Panel is visible but we are not engaged with anything
+                        # (e.g. bootstrap, or a lingering panel after the previous kill).
+                        # Re-acquire the nearest real monster from YOLO. Only when NOT
+                        # engaged — while a target is engaged, switching monsters is
+                        # forbidden until its panel disappears (i.e. it dies).
+                        if self._active_target_id is None and self._yolo_target_pos is None:
                             best = self._select_best_target(tracked)
                             if best is not None:
                                 self._active_target_id = best["track_id"]
@@ -319,30 +336,45 @@ class CombatController:
                 # Never return True without a position — that would trigger a click at
                 # click_position (screen center = the player character).
                 if self._yolo_target_pos is not None:
-                    # If YOLO hasn't confirmed this position recently, the monster is
-                    # gone or obscured — keeping on clicking the frozen coordinate
-                    # would just walk the character across the map. Drop the target.
-                    if now - self._last_pos_confirm_time > self._stale_timeout:
-                        logger.warning("CombatController: Target ID %s position stale for >%.1fs. "
-                                       "Dropping target.",
-                                       self._active_target_id, self._stale_timeout)
+                    since_confirm = now - self._last_pos_confirm_time
+                    if since_confirm > self._give_up_sec:
+                        # YOLO has been blind to this monster for a very long time —
+                        # give up so the bot doesn't idle forever, and blacklist it.
+                        logger.warning("CombatController: Target ID %s unseen for >%.1fs. "
+                                       "Giving up and blacklisting.",
+                                       self._active_target_id, self._give_up_sec)
+                        if self._active_target_id is not None:
+                            self._blacklisted_targets[self._active_target_id] = now
                         self._active_target_id = None
                         self._yolo_target_pos = None
+                        return False
+                    if since_confirm > self._stale_timeout:
+                        # Monster temporarily lost (obscured by the character, animation).
+                        # Hold fire — clicking the frozen coordinate would walk the
+                        # character away — but keep the anchor so re-association can
+                        # resume this fight. Do NOT switch to another monster: the
+                        # panel says this one is still alive.
+                        logger.debug("CombatController: Target ID %s position stale "
+                                     "(%.1fs). Holding fire.",
+                                     self._active_target_id, since_confirm)
                         return False
                     return True
                 return False
 
             # Panel not visible and grace expired — target died or was lost (or failed to lock)
             if self._active_target_id is not None:
-                # If we had a recent target but panel never showed, it might be stuck/unreachable.
-                # Blacklist it so we don't keep trying to click the same unreachable monster.
-                if not panel_visible and now - self._last_yolo_target_time >= self._lock_grace_sec:
+                # Blacklist ONLY if the panel never showed up for this target (the lock
+                # click failed — stuck/unreachable monster). If the panel DID appear
+                # after acquisition, the fight happened and the panel disappearing
+                # simply means the monster died — a normal kill, never blacklist.
+                lock_succeeded = self._panel_last_seen_time >= self._last_yolo_target_time
+                if not lock_succeeded:
                     logger.warning("CombatController: Failed to lock target ID %d. Blacklisting for %.1fs.",
                                    self._active_target_id, self._blacklist_duration)
                     self._blacklisted_targets[self._active_target_id] = now
                 else:
-                    logger.info("CombatController: Target panel gone. Clearing target ID %d.",
-                                self._active_target_id)
+                    logger.info("CombatController: Target panel gone (target died). "
+                                "Clearing target ID %d.", self._active_target_id)
                 self._active_target_id = None
                 self._yolo_target_pos = None
 
@@ -389,6 +421,9 @@ class CombatController:
             if self._yolo_target_pos is None:
                 logger.debug("CombatController: No YOLO target position; skipping attack "
                              "to avoid clicking the player character.")
+                return
+            if now - self._last_pos_confirm_time > self._stale_timeout:
+                logger.debug("CombatController: Target position stale; holding fire.")
                 return
             cx, cy = self._yolo_target_pos
         else:

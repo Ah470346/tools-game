@@ -314,10 +314,11 @@ def test_combat_yolo_panel_visible_only_player_no_click(combat_config_yolo) -> N
     assert inp.log == []
 
 
-def test_combat_yolo_stale_position_drops_target(combat_config_yolo) -> None:
-    """Regression: when YOLO stops confirming the target position (monster gone or
-    obscured) while the panel is still visible, the bot must drop the target instead
-    of clicking a frozen ground coordinate forever (which walks the character away)."""
+def test_combat_yolo_stale_position_holds_fire(combat_config_yolo) -> None:
+    """Regression: when YOLO stops confirming the target position (monster obscured)
+    while the panel is still visible, the bot must stop clicking (a frozen ground
+    coordinate walks the character away) but must NOT switch to another monster —
+    the anchor is kept so re-association can resume the same fight."""
     combat_config_yolo["target_check"] = {
         "enabled": True,
         "region": {"start": [0.0, 0.0], "end": [1.0, 1.0]},
@@ -335,15 +336,141 @@ def test_combat_yolo_stale_position_drops_target(combat_config_yolo) -> None:
     ctrl._active_target_id = 99
     ctrl._yolo_target_pos = [0.6, 0.6]
     ctrl._last_yolo_target_time = now
+    ctrl._panel_last_seen_time = now
     # Position was last confirmed longer ago than the stale timeout
     ctrl._last_pos_confirm_time = now - 2.0
 
     assert ctrl.has_target(red_frame) is False
-    assert ctrl._yolo_target_pos is None
-    assert ctrl._active_target_id is None
+    # Engagement is kept (anchor + ID) — no switch while the panel is visible
+    assert ctrl._yolo_target_pos == [0.6, 0.6]
+    assert ctrl._active_target_id == 99
 
     ctrl.execute_combat_actions()
     assert inp.log == []
+
+
+def test_combat_yolo_gives_up_after_long_blindness(combat_config_yolo) -> None:
+    """If YOLO cannot re-confirm the target for target_give_up_sec, the bot gives
+    up (and blacklists it) instead of idling forever on a stuck engagement."""
+    combat_config_yolo["target_check"] = {
+        "enabled": True,
+        "region": {"start": [0.0, 0.0], "end": [1.0, 1.0]},
+        "min_red_ratio": 0.01,
+    }
+    combat_config_yolo["target_give_up_sec"] = 6.0
+    det = DummyDetector([])
+    red_frame = np.zeros((100, 100, 3), dtype=np.uint8)
+    red_frame[10:20, 10:20] = [0, 0, 200]
+    cap = DummyCapture((0, 0, 0))
+    inp = MockInput()
+    ctrl = CombatController(capture=cap, simulator=inp, config=combat_config_yolo, detector=det)
+
+    now = time.time()
+    ctrl._active_target_id = 99
+    ctrl._yolo_target_pos = [0.6, 0.6]
+    ctrl._last_yolo_target_time = now
+    ctrl._panel_last_seen_time = now
+    ctrl._last_pos_confirm_time = now - 7.0  # Blind past the give-up threshold
+
+    assert ctrl.has_target(red_frame) is False
+    assert ctrl._active_target_id is None
+    assert ctrl._yolo_target_pos is None
+    assert 99 in ctrl._blacklisted_targets
+
+
+def test_combat_yolo_reassociates_to_melee_monster_near_player(combat_config_yolo) -> None:
+    """Regression: a monster fighting in melee range stands right next to the
+    character (inside the player exclusion zone). Re-association must still adopt
+    it — otherwise every melee fight is abandoned after the first hit."""
+    combat_config_yolo["target_check"] = {
+        "enabled": True,
+        "region": {"start": [0.0, 0.0], "end": [1.0, 1.0]},
+        "min_red_ratio": 0.01,
+    }
+    combat_config_yolo["reassociate_delay_sec"] = 0.5
+    # Detection right next to screen center (would be filtered as "player"
+    # by acquisition-time filtering)
+    det = DummyDetector([
+        {"class_id": 0, "confidence": 0.9, "box": [0.52, 0.51, 0.1, 0.1]}
+    ])
+    red_frame = np.zeros((100, 100, 3), dtype=np.uint8)
+    red_frame[10:20, 10:20] = [0, 0, 200]
+    cap = DummyCapture((0, 0, 0))
+    inp = MockInput()
+    ctrl = CombatController(capture=cap, simulator=inp, config=combat_config_yolo, detector=det)
+
+    now = time.time()
+    ctrl._active_target_id = 99
+    ctrl._yolo_target_pos = [0.55, 0.53]  # Monster was approaching the player
+    ctrl._last_yolo_target_time = now
+    ctrl._panel_last_seen_time = now
+    ctrl._last_pos_confirm_time = now - 0.6  # Coast delay elapsed
+
+    assert ctrl.has_target(red_frame) is True
+    # Adopted the melee monster next to the character
+    assert ctrl._active_target_id == 1
+    assert ctrl._yolo_target_pos == [0.52, 0.51]
+
+
+def test_combat_yolo_panel_flicker_does_not_end_engagement(combat_config_yolo) -> None:
+    """Regression: after grace expires, a single missed panel read must not be
+    treated as the target's death — previously this blacklisted the monster
+    mid-fight and switched to another one after every hit."""
+    combat_config_yolo["target_check"] = {
+        "enabled": True,
+        "region": {"start": [0.0, 0.0], "end": [1.0, 1.0]},
+        "min_red_ratio": 0.01,
+    }
+    combat_config_yolo["panel_gone_confirm_sec"] = 0.3
+    det = DummyDetector([])
+    # Frame with NO red pixels → panel read misses this frame
+    black_frame = np.zeros((100, 100, 3), dtype=np.uint8)
+    cap = DummyCapture((0, 0, 0))
+    inp = MockInput()
+    ctrl = CombatController(capture=cap, simulator=inp, config=combat_config_yolo, detector=det)
+
+    now = time.time()
+    ctrl._active_target_id = 99
+    ctrl._yolo_target_pos = [0.6, 0.6]
+    ctrl._last_yolo_target_time = now - 5.0  # Grace long expired (mid-fight)
+    ctrl._panel_last_seen_time = now - 0.1   # Panel was seen an instant ago
+    ctrl._last_pos_confirm_time = now
+
+    assert ctrl.has_target(black_frame) is True
+    # Engagement survives the flicker: same target, not blacklisted
+    assert ctrl._active_target_id == 99
+    assert 99 not in ctrl._blacklisted_targets
+
+
+def test_combat_yolo_no_blacklist_on_normal_kill(combat_config_yolo) -> None:
+    """When the panel appeared during the fight and then disappears (monster died),
+    the target must be cleared WITHOUT blacklisting, and the next monster acquired."""
+    combat_config_yolo["target_check"] = {
+        "enabled": True,
+        "region": {"start": [0.0, 0.0], "end": [1.0, 1.0]},
+        "min_red_ratio": 0.5,  # Panel never reads visible on this frame
+    }
+    combat_config_yolo["target_lock_grace_sec"] = 0.0
+    combat_config_yolo["panel_gone_confirm_sec"] = 0.0
+    det = DummyDetector([
+        {"class_id": 0, "confidence": 0.9, "box": [0.6, 0.6, 0.1, 0.1]}
+    ])
+    cap = DummyCapture((0, 0, 0))
+    inp = MockInput()
+    ctrl = CombatController(capture=cap, simulator=inp, config=combat_config_yolo, detector=det)
+
+    now = time.time()
+    ctrl._active_target_id = 99
+    ctrl._yolo_target_pos = [0.3, 0.3]
+    ctrl._last_yolo_target_time = now - 5.0
+    ctrl._panel_last_seen_time = now - 1.0  # Panel WAS seen after acquisition → real kill
+
+    frame = cap.grab_frame()
+    assert ctrl.has_target(frame) is False
+    # Normal kill: old target NOT blacklisted, new one acquired
+    assert 99 not in ctrl._blacklisted_targets
+    assert ctrl._yolo_target_pos == [0.6, 0.6]
+    assert ("click", 0.6, 0.6, "left") in inp.log
 
 
 def test_combat_yolo_flicker_does_not_switch_target(combat_config_yolo) -> None:

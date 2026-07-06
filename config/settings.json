@@ -25,6 +25,8 @@
     "stale_target_timeout_sec": 1.5,
     "reassociate_delay_sec": 0.5,
     "reassociate_max_dist_ratio": 0.08,
+    "panel_gone_confirm_sec": 0.3,
+    "target_give_up_sec": 6.0,
     "target_check": {
       "enabled": true,
       "check_pixel": [0.87, 0.20],
