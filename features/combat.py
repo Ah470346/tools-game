@@ -15,6 +15,7 @@ import numpy as np
 from backends.input_base import IInputBackend
 from backends.capture_base import ICaptureBackend
 from core.humanizer import get_random_delay
+from vision.tracker import TargetTracker
 
 logger = logging.getLogger(__name__)
 
@@ -75,8 +76,25 @@ class CombatController:
         self._current_rmb_cooldown = self.right_click_cfg.get("interval_sec", 1.0)
         self._current_tab_cooldown = self.tab_interval_sec
 
+        # Initialize Tracker
+        tracker_cfg = {}
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        config_path = os.path.join(base_dir, "config", "settings.json")
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, "r", encoding="utf-8") as f:
+                    settings_data = json.load(f)
+                    tracker_cfg = settings_data.get("tracker", {})
+            except Exception as e:
+                logger.error("CombatController: Failed to load tracker config from settings: %s", e)
+        
+        iou_threshold = tracker_cfg.get("iou_threshold", 0.3)
+        max_lost_frames = tracker_cfg.get("max_lost_frames", 15)
+        self.tracker = TargetTracker(iou_threshold=iou_threshold, max_lost_frames=max_lost_frames)
+
         # Track targets detected via YOLO
         self._yolo_target_pos: Optional[list] = None
+        self._active_target_id: Optional[int] = None
         self._last_yolo_target_time = 0.0
         self._target_lock_start_time = 0.0
 
@@ -153,17 +171,19 @@ class CombatController:
                     logger.info("CombatController: Target lock timeout (stuck?). Pressing '%s' to unlock.", cancel_key)
                     self.input.key(cancel_key, "press")
                     self._yolo_target_pos = None
+                    self._active_target_id = None
                     self._target_lock_start_time = 0.0
                     self._last_yolo_target_time = 0.0
                     return False
             else:
                 self._target_lock_start_time = 0.0
 
-            lock_duration = self.config.get("yolo_lock_duration_sec", 1.5)
+            lock_duration = self.config.get("yolo_lock_duration_sec", 1.2)
             is_pending = self._yolo_target_pos is not None and (now - self._last_yolo_target_time < lock_duration)
 
             if not is_locked and not is_pending:
                 self._yolo_target_pos = None
+                self._active_target_id = None
 
             # Always run YOLO to track / update position if locked or pending
             try:
@@ -177,51 +197,66 @@ class CombatController:
                 return is_locked or is_pending
 
             detections = self.detector.detect(frame)
+            tracked_objects = self.tracker.update(detections)
 
-            if is_locked or is_pending:
-                if detections:
-                    # Find detection closest to our last target position (or center)
-                    reference_pos = self._yolo_target_pos if self._yolo_target_pos is not None else [0.5, 0.5]
-                    best_det = None
-                    min_dist = float("inf")
-                    for det in detections:
-                        box = det.get("box", [0.5, 0.5, 0.0, 0.0])
-                        xc, yc = box[0], box[1]
-                        dist = np.sqrt((xc - reference_pos[0]) ** 2 + (yc - reference_pos[1]) ** 2)
-                        if dist < min_dist:
-                            min_dist = dist
-                            best_det = det
+            # If we already have an active target track ID
+            if self._active_target_id is not None:
+                # Check if it is still present in active tracks
+                matched_track = next((t for t in tracked_objects if t["track_id"] == self._active_target_id), None)
+                if matched_track is not None:
+                    # Update target coordinates
+                    box = matched_track["box"]
+                    self._yolo_target_pos = [box[0], box[1]]
+                    self._last_yolo_target_time = now
+                    logger.debug("CombatController: Tracking active target ID %d at (%.3f, %.3f)", self._active_target_id, box[0], box[1])
+                    return True
+                else:
+                    # If target lock is still active in game, try to re-associate to closest track to last position
+                    if is_locked and tracked_objects and self._yolo_target_pos is not None:
+                        best_track = None
+                        min_dist = float("inf")
+                        for t in tracked_objects:
+                            box = t["box"]
+                            dist = np.sqrt((box[0] - self._yolo_target_pos[0])**2 + (box[1] - self._yolo_target_pos[1])**2)
+                            if dist < min_dist:
+                                min_dist = dist
+                                best_track = t
+                        
+                        if best_track is not None and min_dist < 0.2: # close enough (20% of screen width)
+                            self._active_target_id = best_track["track_id"]
+                            self._yolo_target_pos = [best_track["box"][0], best_track["box"][1]]
+                            self._last_yolo_target_time = now
+                            logger.info("CombatController: Re-associated active target to ID %d at (%.3f, %.3f)", self._active_target_id, best_track["box"][0], best_track["box"][1])
+                            return True
                     
-                    if best_det is not None:
-                        box = best_det.get("box")
-                        self._yolo_target_pos = [box[0], box[1]]
-                        logger.debug("CombatController: Target tracked and updated to (%.3f, %.3f)", box[0], box[1])
-                return True
+                    # Otherwise, we lost it
+                    logger.info("CombatController: Target ID %d lost.", self._active_target_id)
+                    self._active_target_id = None
+                    self._yolo_target_pos = None
 
-            # If not locked and not pending, find a new target closest to the center
-            if not detections:
-                self._yolo_target_pos = None
+            # If no active target lock, look for new target closest to center
+            if not tracked_objects:
                 return False
 
-            best_det = None
+            best_track = None
             min_dist = float("inf")
-            for det in detections:
-                box = det.get("box", [0.5, 0.5, 0.0, 0.0])
-                xc, yc = box[0], box[1]
-                dist = np.sqrt((xc - 0.5) ** 2 + (yc - 0.5) ** 2)
+            for t in tracked_objects:
+                box = t["box"]
+                dist = np.sqrt((box[0] - 0.5) ** 2 + (box[1] - 0.5) ** 2)
                 if dist < min_dist:
                     min_dist = dist
-                    best_det = det
+                    best_track = t
 
             engage_range = self.config.get("engage_range_ratio", 1.0)
-            if best_det is not None and min_dist <= engage_range:
-                box = best_det.get("box")
+            if best_track is not None and min_dist <= engage_range:
+                box = best_track["box"]
+                self._active_target_id = best_track["track_id"]
                 self._yolo_target_pos = [box[0], box[1]]
                 self._last_yolo_target_time = now
-                logger.debug("CombatController: YOLO target acquired at (%.3f, %.3f), dist=%.3f", box[0], box[1], min_dist)
+                self._target_lock_start_time = now
+                logger.info("CombatController: Acquired new target ID %d at (%.3f, %.3f), dist=%.3f", self._active_target_id, box[0], box[1], min_dist)
                 return True
 
-            self._yolo_target_pos = None
             return False
 
     def execute_combat_actions(self) -> None:

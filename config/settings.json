@@ -79,5 +79,9 @@
       "filled_color_bgr": [8, 250, 120],
       "color_tolerance": 30
     }
+  },
+  "tracker": {
+    "iou_threshold": 0.3,
+    "max_lost_frames": 15
   }
 }
