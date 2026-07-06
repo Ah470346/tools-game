@@ -90,7 +90,9 @@ class CombatController:
         
         iou_threshold = tracker_cfg.get("iou_threshold", 0.3)
         max_lost_frames = tracker_cfg.get("max_lost_frames", 15)
-        self.tracker = TargetTracker(iou_threshold=iou_threshold, max_lost_frames=max_lost_frames)
+        max_match_dist_ratio = tracker_cfg.get("max_match_dist_ratio", 0.0)
+        self.tracker = TargetTracker(iou_threshold=iou_threshold, max_lost_frames=max_lost_frames,
+                                     max_match_dist_ratio=max_match_dist_ratio)
 
         # Track targets detected via YOLO
         self._yolo_target_pos: Optional[list] = None

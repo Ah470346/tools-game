@@ -57,16 +57,20 @@ class TargetTracker:
     Uses pure-Python IoU association greedy matching.
     """
 
-    def __init__(self, iou_threshold: float = 0.3, max_lost_frames: int = 15) -> None:
+    def __init__(self, iou_threshold: float = 0.3, max_lost_frames: int = 15,
+                 max_match_dist_ratio: float = 0.0) -> None:
         """
         Initializes the target tracker.
 
         Args:
             iou_threshold (float): Minimum IoU threshold to consider association matches.
             max_lost_frames (int): Maximum consecutive frames a track can be lost before deletion.
+            max_match_dist_ratio (float): Fallback association by center distance (normalized)
+                for pairs that IoU could not match. 0.0 disables the fallback.
         """
         self.iou_threshold = iou_threshold
         self.max_lost_frames = max_lost_frames
+        self.max_match_dist_ratio = max_match_dist_ratio
         self.next_track_id = 1
         self.tracks: List[Track] = []
 
@@ -136,6 +140,38 @@ class TargetTracker:
                     track.confidence = det["confidence"]
                     track.lost_count = 0
                     break
+
+        # 3b. Fallback association by center distance for pairs IoU could not match.
+        # Fast monster movement or camera scroll (the character running) shifts
+        # boxes so far between frames that IoU drops to 0 even though it is the
+        # same target — without this, the track ID churns and downstream target
+        # locking loses the monster mid-fight.
+        if self.max_match_dist_ratio > 0.0:
+            while True:
+                best_pair = None
+                best_dist = self.max_match_dist_ratio
+                for t_idx, track in enumerate(self.tracks):
+                    if t_idx in matched_tracks:
+                        continue
+                    for d_idx, det in enumerate(detections):
+                        if d_idx in matched_dets:
+                            continue
+                        dist = float(np.sqrt(
+                            (track.box[0] - det["box"][0]) ** 2 +
+                            (track.box[1] - det["box"][1]) ** 2))
+                        if dist < best_dist:
+                            best_dist = dist
+                            best_pair = (t_idx, d_idx)
+                if best_pair is None:
+                    break
+                t_idx, d_idx = best_pair
+                matched_tracks.add(t_idx)
+                matched_dets.add(d_idx)
+                det = detections[d_idx]
+                track = self.tracks[t_idx]
+                track.box = det["box"]
+                track.confidence = det["confidence"]
+                track.lost_count = 0
 
         # 4. Increment lost count for unmatched tracks
         for t_idx, track in enumerate(self.tracks):

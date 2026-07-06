@@ -24,7 +24,7 @@
     "target_lock_grace_sec": 2.0,
     "stale_target_timeout_sec": 1.5,
     "reassociate_delay_sec": 0.5,
-    "reassociate_max_dist_ratio": 0.08,
+    "reassociate_max_dist_ratio": 0.15,
     "panel_gone_confirm_sec": 0.3,
     "target_give_up_sec": 6.0,
     "target_check": {
@@ -89,7 +89,8 @@
   },
   "tracker": {
     "iou_threshold": 0.3,
-    "max_lost_frames": 15
+    "max_lost_frames": 15,
+    "max_match_dist_ratio": 0.1
   },
   "ocr": {
     "enabled": true,
