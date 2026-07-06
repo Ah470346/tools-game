@@ -186,6 +186,47 @@ class CombatController:
                      red_ratio, min_ratio, is_visible)
         return is_visible
 
+    def _select_best_target(self, tracked: list) -> Optional[dict]:
+        """Selects the closest valid monster from tracked detections.
+
+        Filters out blacklisted tracks and the player character (screen center),
+        then returns the track nearest to center that is within engage range.
+
+        Args:
+            tracked (list): Active tracks from the TargetTracker.
+
+        Returns:
+            Optional[dict]: The best track, or None if no valid target is available.
+        """
+        candidates = []
+        for t in tracked:
+            if t["track_id"] in self._blacklisted_targets:
+                continue
+
+            xc, yc, w, h = t["box"]
+            # The player character is at the screen center (0.5, 0.5).
+            # If the center falls inside the bounding box, it's the player.
+            is_player = (xc - w / 2 <= 0.5 <= xc + w / 2) and (yc - h / 2 <= 0.5 <= yc + h / 2)
+
+            # Elliptical exclusion zone (taller than wide) to cover the rest of the character.
+            dx = abs(xc - 0.5)
+            dy = abs(yc - 0.5)
+            in_exclusion_zone = (dx ** 2 + (dy / 2.0) ** 2) <= (self._exclusion_zone ** 2)
+
+            if not is_player and not in_exclusion_zone:
+                candidates.append(t)
+
+        if not candidates:
+            return None
+
+        best = min(candidates, key=lambda t: np.sqrt(
+            (t["box"][0] - 0.5) ** 2 + (t["box"][1] - 0.5) ** 2))
+        dist = np.sqrt((best["box"][0] - 0.5) ** 2 + (best["box"][1] - 0.5) ** 2)
+        engage_range = self.config.get("engage_range_ratio", 1.0)
+        if dist > engage_range:
+            return None
+        return best
+
     def has_target(self, frame: np.ndarray) -> bool:
         """
         Determines whether an active target is locked on screen.
@@ -238,10 +279,30 @@ class CombatController:
                                     self._yolo_target_pos = [best["box"][0], best["box"][1]]
                                     logger.info("CombatController: Re-associated to track ID %d",
                                                 self._active_target_id)
+
+                        # Panel is visible but we have no confirmed target position
+                        # (e.g. previous target just died and its panel still lingers).
+                        # Re-acquire the nearest real monster from YOLO instead of leaving
+                        # the position unset, which would make execute_combat_actions fall
+                        # back to screen center and attack the player character.
+                        if self._yolo_target_pos is None:
+                            best = self._select_best_target(tracked)
+                            if best is not None:
+                                self._active_target_id = best["track_id"]
+                                self._yolo_target_pos = [best["box"][0], best["box"][1]]
+                                self._last_yolo_target_time = now
+                                logger.info("CombatController: Panel visible without lock — "
+                                            "re-acquired target ID %d at (%.3f, %.3f)",
+                                            self._active_target_id, best["box"][0], best["box"][1])
                 except Exception as e:
                     logger.error("CombatController: YOLO position update error: %s", e)
 
-                return True
+                # Only report an active target when we actually know where to click.
+                # Never return True without a position — that would trigger a click at
+                # click_position (screen center = the player character).
+                if self._yolo_target_pos is not None:
+                    return True
+                return False
 
             # Panel not visible and grace expired — target died or was lost (or failed to lock)
             if self._active_target_id is not None:
@@ -270,42 +331,18 @@ class CombatController:
                     detections = self.detector.detect(frame)
                     tracked = self.tracker.update(detections)
 
-                    if tracked:
-                        # Filter out detections inside exclusion zone (player character area)
-                        # AND filter out blacklisted targets
-                        candidates = []
-                        for t in tracked:
-                            if t["track_id"] in self._blacklisted_targets:
-                                continue
-                            
-                            xc, yc, w, h = t["box"]
-                            # The player character is at the screen center (0.5, 0.5).
-                            # If the center falls inside the bounding box, it's the player.
-                            is_player = (xc - w/2 <= 0.5 <= xc + w/2) and (yc - h/2 <= 0.5 <= yc + h/2)
-                            
-                            # Elliptical exclusion zone (taller than wide) to cover the rest of the character.
-                            dx = abs(xc - 0.5)
-                            dy = abs(yc - 0.5)
-                            in_exclusion_zone = (dx**2 + (dy / 2.0)**2) <= (self._exclusion_zone ** 2)
-                            
-                            if not is_player and not in_exclusion_zone:
-                                candidates.append(t)
-
-                        if candidates:
-                            best = min(candidates, key=lambda t: np.sqrt(
-                                (t["box"][0] - 0.5) ** 2 + (t["box"][1] - 0.5) ** 2))
-                            dist = np.sqrt((best["box"][0] - 0.5) ** 2 +
-                                           (best["box"][1] - 0.5) ** 2)
-                            engage_range = self.config.get("engage_range_ratio", 1.0)
-
-                            if dist <= engage_range:
-                                self._active_target_id = best["track_id"]
-                                self._yolo_target_pos = [best["box"][0], best["box"][1]]
-                                self._last_yolo_target_time = now
-                                logger.info("CombatController: Clicking new target ID %d at (%.3f, %.3f), dist=%.3f",
-                                            self._active_target_id, best["box"][0], best["box"][1], dist)
-                                self.input.click(best["box"][0], best["box"][1], button="left")
-                                return False
+                    # Pick the closest valid monster (excludes player/blacklist/out-of-range)
+                    best = self._select_best_target(tracked)
+                    if best is not None:
+                        dist = np.sqrt((best["box"][0] - 0.5) ** 2 +
+                                       (best["box"][1] - 0.5) ** 2)
+                        self._active_target_id = best["track_id"]
+                        self._yolo_target_pos = [best["box"][0], best["box"][1]]
+                        self._last_yolo_target_time = now
+                        logger.info("CombatController: Clicking new target ID %d at (%.3f, %.3f), dist=%.3f",
+                                    self._active_target_id, best["box"][0], best["box"][1], dist)
+                        self.input.click(best["box"][0], best["box"][1], button="left")
+                        return False
             except Exception as e:
                 logger.error("CombatController: YOLO target search error: %s", e)
 
@@ -316,7 +353,14 @@ class CombatController:
         Executes click actions on the target when locked, respecting individual cooldowns.
         """
         now = time.time()
-        if self.target_source == "yolo" and self._yolo_target_pos is not None:
+        if self.target_source == "yolo":
+            # In YOLO mode we must never fall back to click_position (screen center),
+            # which is the player character. If we have no confirmed target position,
+            # skip attacking this cycle.
+            if self._yolo_target_pos is None:
+                logger.debug("CombatController: No YOLO target position; skipping attack "
+                             "to avoid clicking the player character.")
+                return
             cx, cy = self._yolo_target_pos
         else:
             cx, cy = self.click_position

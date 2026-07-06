@@ -256,6 +256,64 @@ def test_combat_yolo_panel_visible_keeps_target(combat_config_yolo) -> None:
     assert ctrl._yolo_target_pos == [0.6, 0.6]
 
 
+def test_combat_yolo_panel_visible_no_lock_reacquires(combat_config_yolo) -> None:
+    """Regression: panel visible but no active lock (moment right after a kill) must
+    re-acquire a real monster, never fall back to clicking screen center (the player)."""
+    combat_config_yolo["target_check"] = {
+        "enabled": True,
+        "region": {"start": [0.0, 0.0], "end": [1.0, 1.0]},
+        "min_red_ratio": 0.01,
+    }
+    det = DummyDetector([
+        {"class_id": 0, "confidence": 0.9, "box": [0.6, 0.6, 0.1, 0.1]}
+    ])
+    red_frame = np.zeros((100, 100, 3), dtype=np.uint8)
+    red_frame[10:20, 10:20] = [0, 0, 200]  # Red patch => panel visible
+    cap = DummyCapture((0, 0, 0))
+    inp = MockInput()
+    ctrl = CombatController(capture=cap, simulator=inp, config=combat_config_yolo, detector=det)
+
+    # No lock at all, but panel reads visible (lingering red after previous kill)
+    assert ctrl._active_target_id is None
+    assert ctrl._yolo_target_pos is None
+
+    assert ctrl.has_target(red_frame) is True
+    # Must have re-acquired the real monster, not the player center
+    assert ctrl._yolo_target_pos == [0.6, 0.6]
+
+    inp.log.clear()
+    ctrl.execute_combat_actions()
+    assert ("click", 0.6, 0.6, "left") in inp.log
+    # Never clicks the player at screen center
+    assert ("click", 0.5, 0.5, "left") not in inp.log
+
+
+def test_combat_yolo_panel_visible_only_player_no_click(combat_config_yolo) -> None:
+    """Regression: panel visible but the only detection is the player character
+    (screen center). Must report no target and must NOT click the player."""
+    combat_config_yolo["target_check"] = {
+        "enabled": True,
+        "region": {"start": [0.0, 0.0], "end": [1.0, 1.0]},
+        "min_red_ratio": 0.01,
+    }
+    # Detection whose box contains (0.5, 0.5) -> excluded as the player
+    det = DummyDetector([
+        {"class_id": 0, "confidence": 0.9, "box": [0.5, 0.5, 0.2, 0.2]}
+    ])
+    red_frame = np.zeros((100, 100, 3), dtype=np.uint8)
+    red_frame[10:20, 10:20] = [0, 0, 200]
+    cap = DummyCapture((0, 0, 0))
+    inp = MockInput()
+    ctrl = CombatController(capture=cap, simulator=inp, config=combat_config_yolo, detector=det)
+
+    assert ctrl.has_target(red_frame) is False
+    assert ctrl._yolo_target_pos is None
+
+    ctrl.execute_combat_actions()
+    # No click at all — especially not on the player at [0.5, 0.5]
+    assert inp.log == []
+
+
 def test_combat_yolo_panel_gone_clears_target(combat_config_yolo) -> None:
     """When target panel disappears, bot clears target and finds new one."""
     combat_config_yolo["target_check"] = {
