@@ -120,16 +120,21 @@ class LootCollector:
 
             # 4. Scan boxes
             for (x, y, w, h) in label_boxes:
-                # Add tiny padding to prevent character clipping during cropping
-                x_pad = max(0, x - 2)
-                y_pad = max(0, y - 2)
-                w_pad = min(width - x_pad, w + 4)
-                h_pad = min(height - y_pad, h + 4)
+                # Add padding to prevent character clipping during cropping
+                x_pad = max(0, x - 5)
+                y_pad = max(0, y - 5)
+                w_pad = min(width - x_pad, w + 10)
+                h_pad = min(height - y_pad, h + 10)
 
                 roi = frame[y_pad:y_pad + h_pad, x_pad:x_pad + w_pad]
                 
                 # Perform OCR read
                 text = self.ocr_reader.read_text(roi)
+                if text:
+                    logger.info("LootCollector: OCR read text '%s' from label at x=%d, y=%d", text, x, y)
+                else:
+                    logger.info("LootCollector: Detected label at x=%d, y=%d but OCR read nothing", x, y)
+
                 if text and self._matches_whitelist(text):
                     # Item matches! Release hotkey and click
                     logger.info("LootCollector: Attempting to collect whitelisted item: '%s'", text)
