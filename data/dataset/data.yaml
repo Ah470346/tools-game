@@ -1,7 +1,7 @@
 path: D:/tool1/tools-game/data/dataset
-train: train/images
-val: valid/images
-test: test/images
+train: ../train/images
+val: ../valid/images
+test: ../test/images
 
 nc: 2
 names: ['hero', 'monster']
@@ -9,6 +9,6 @@ names: ['hero', 'monster']
 roboflow:
   workspace: duytod
   project: tool-game
-  version: 1
+  version: 2
   license: CC BY 4.0
-  url: https://universe.roboflow.com/duytod/tool-game/dataset/1
+  url: https://universe.roboflow.com/duytod/tool-game/dataset/2

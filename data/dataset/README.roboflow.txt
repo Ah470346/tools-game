@@ -1,8 +1,8 @@
 
-tool game - v1 2026-07-06 11:27am
+tool game - v2 hi
 ==============================
 
-This dataset was exported via roboflow.com on July 6, 2026 at 4:30 AM GMT
+This dataset was exported via roboflow.com on July 6, 2026 at 10:37 AM GMT
 
 Roboflow is an end-to-end computer vision platform that helps you
 * collaborate with your team on computer vision projects
@@ -17,7 +17,7 @@ visit https://github.com/roboflow/notebooks
 
 To find over 100k other datasets and pre-trained models, visit https://universe.roboflow.com
 
-The dataset includes 80 images.
+The dataset includes 105 images.
 Tool-game are annotated in YOLOv8 format.
 
 The following pre-processing was applied to each image:

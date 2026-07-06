@@ -20,14 +20,16 @@
     },
     "click_position": [0.5, 0.5],
     "engage_range_ratio": 0.18,
-    "yolo_lock_duration_sec": 1.2,
-    "target_lock_timeout_sec": 5.0,
-    "cancel_target_key": "esc",
+    "exclusion_zone_ratio": 0.06,
+    "target_lock_grace_sec": 2.0,
     "target_check": {
       "enabled": true,
       "check_pixel": [0.87, 0.20],
-      "expected_color_bgr": [0, 49, 181],
-      "color_tolerance": 30
+      "region": {
+        "start": [0.86, 0.12],
+        "end": [0.97, 0.23]
+      },
+      "min_red_ratio": 0.02
     }
   },
   "thresholds": {

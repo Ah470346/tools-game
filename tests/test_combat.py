@@ -155,7 +155,8 @@ def combat_config_yolo() -> dict:
 
 
 def test_combat_yolo_targeting(combat_config_yolo) -> None:
-    # Set up detector returning one target within range
+    """First has_target call with YOLO: clicks the target, returns False (grace).
+    Subsequent call during grace period returns True."""
     detections = [
         {"class_id": 0, "confidence": 0.9, "box": [0.6, 0.6, 0.1, 0.1]}
     ]
@@ -165,19 +166,24 @@ def test_combat_yolo_targeting(combat_config_yolo) -> None:
     ctrl = CombatController(capture=cap, simulator=inp, config=combat_config_yolo, detector=det)
 
     frame = cap.grab_frame()
-    assert ctrl.has_target(frame) is True
+    # First call: no panel visible, finds target, clicks it, returns False
+    assert ctrl.has_target(frame) is False
     assert ctrl._yolo_target_pos == [0.6, 0.6]
+    # A targeting click should have been issued
+    assert ("click", 0.6, 0.6, "left") in inp.log
+
+    # Second call during grace period: returns True (waiting for panel)
+    assert ctrl.has_target(frame) is True
 
     # Verify combat execution clicks at the target coordinates
+    inp.log.clear()
     ctrl.execute_combat_actions()
     assert ("click", 0.6, 0.6, "left") in inp.log
     assert ("click", 0.6, 0.6, "right") in inp.log
 
 
 def test_combat_yolo_closest_target(combat_config_yolo) -> None:
-    # Set up detector returning two targets:
-    # Target 1: [0.8, 0.8] (distance from 0.5, 0.5 is 0.424)
-    # Target 2: [0.4, 0.4] (distance from 0.5, 0.5 is 0.141)
+    """Should pick the target closest to screen center."""
     detections = [
         {"class_id": 0, "confidence": 0.8, "box": [0.8, 0.8, 0.1, 0.1]},
         {"class_id": 0, "confidence": 0.9, "box": [0.4, 0.4, 0.1, 0.1]}
@@ -188,7 +194,7 @@ def test_combat_yolo_closest_target(combat_config_yolo) -> None:
     ctrl = CombatController(capture=cap, simulator=inp, config=combat_config_yolo, detector=det)
 
     frame = cap.grab_frame()
-    assert ctrl.has_target(frame) is True
+    ctrl.has_target(frame)
     # Should pick [0.4, 0.4] since it is closer to the center [0.5, 0.5]
     assert ctrl._yolo_target_pos == [0.4, 0.4]
 
@@ -219,12 +225,12 @@ def test_combat_yolo_no_detections(combat_config_yolo) -> None:
     assert ctrl._yolo_target_pos is None
 
 
-def test_combat_yolo_target_lock_tracks_moving_position(combat_config_yolo) -> None:
+def test_combat_yolo_panel_visible_keeps_target(combat_config_yolo) -> None:
+    """When target panel is visible (red pixels in region), bot stays locked."""
     combat_config_yolo["target_check"] = {
         "enabled": True,
-        "check_pixel": [0.5, 0.05],
-        "expected_color_bgr": [0, 49, 181],
-        "color_tolerance": 30
+        "region": {"start": [0.0, 0.0], "end": [1.0, 1.0]},
+        "min_red_ratio": 0.01
     }
 
     detections = [
@@ -232,62 +238,49 @@ def test_combat_yolo_target_lock_tracks_moving_position(combat_config_yolo) -> N
     ]
     det = DummyDetector(detections)
 
-    # 1. Mismatched color (no target lock) -> should run YOLO detection
-    cap_no_lock = DummyCapture((0, 0, 0))
+    # Create a frame with red pixels to simulate panel visible
+    red_frame = np.zeros((100, 100, 3), dtype=np.uint8)
+    red_frame[10:20, 10:20] = [0, 0, 200]  # Red patch in BGR
+    cap = DummyCapture((0, 0, 0))
     inp = MockInput()
-    ctrl = CombatController(capture=cap_no_lock, simulator=inp, config=combat_config_yolo, detector=det)
+    ctrl = CombatController(capture=cap, simulator=inp, config=combat_config_yolo, detector=det)
 
-    frame_no_lock = cap_no_lock.grab_frame()
-    assert ctrl.has_target(frame_no_lock) is True
+    # Simulate having an active target
+    ctrl._active_target_id = 1
+    ctrl._yolo_target_pos = [0.5, 0.5]
+
+    # Panel is visible → should return True and stay locked
+    assert ctrl.has_target(red_frame) is True
+
+    # Simulate target moving to [0.6, 0.6] — position should update
     assert ctrl._yolo_target_pos == [0.6, 0.6]
-    assert det.detect_calls == 1
-
-    # 2. Matching color (target lock active) -> should call YOLO to track/update moving target position
-    cap_locked = DummyCapture((0, 49, 181))
-    ctrl.capture = cap_locked
-    
-    # Simulate target moving to [0.7, 0.7]
-    det.detections = [
-        {"class_id": 0, "confidence": 0.9, "box": [0.7, 0.7, 0.1, 0.1]}
-    ]
-    det.detect_calls = 0
-
-    frame_locked = cap_locked.grab_frame()
-    assert ctrl.has_target(frame_locked) is True
-    # The coordinate should follow the target to [0.7, 0.7]
-    assert ctrl._yolo_target_pos == [0.7, 0.7]
-    assert det.detect_calls == 1  # YOLO detector run to track target!
 
 
-def test_combat_yolo_target_lock_timeout(combat_config_yolo) -> None:
+def test_combat_yolo_panel_gone_clears_target(combat_config_yolo) -> None:
+    """When target panel disappears, bot clears target and finds new one."""
     combat_config_yolo["target_check"] = {
         "enabled": True,
-        "check_pixel": [0.5, 0.05],
-        "expected_color_bgr": [0, 49, 181],
-        "color_tolerance": 30
+        "region": {"start": [0.0, 0.0], "end": [1.0, 1.0]},
+        "min_red_ratio": 0.5  # Very high threshold → panel never "visible"
     }
-    combat_config_yolo["target_lock_timeout_sec"] = 0.2
-    combat_config_yolo["cancel_target_key"] = "esc"
+    combat_config_yolo["target_lock_grace_sec"] = 0.0  # No grace
 
     det = DummyDetector([
         {"class_id": 0, "confidence": 0.9, "box": [0.6, 0.6, 0.1, 0.1]}
     ])
-    cap_locked = DummyCapture((0, 49, 181)) # Locked
+    cap = DummyCapture((0, 0, 0))
     inp = MockInput()
-    ctrl = CombatController(capture=cap_locked, simulator=inp, config=combat_config_yolo, detector=det)
+    ctrl = CombatController(capture=cap, simulator=inp, config=combat_config_yolo, detector=det)
 
-    frame = cap_locked.grab_frame()
-    # 1. First lock check -> lock starts, sets _target_lock_start_time
-    assert ctrl.has_target(frame) is True
-    assert ctrl._target_lock_start_time > 0.0
-    assert ("key", "esc", "press") not in inp.log
+    # Simulate having a previously locked target
+    ctrl._active_target_id = 99
+    ctrl._yolo_target_pos = [0.3, 0.3]
+    ctrl._last_yolo_target_time = 0.0  # grace expired
 
-    # 2. Wait for timeout duration
-    time.sleep(0.3)
-
-    # 3. Second lock check after timeout -> should trigger esc press and release lock
-    assert ctrl.has_target(frame) is False
-    assert ctrl._target_lock_start_time == 0.0
-    assert ("key", "esc", "press") in inp.log
-
-
+    frame = cap.grab_frame()
+    # Panel not visible, grace expired → should clear old target and click new one
+    result = ctrl.has_target(frame)
+    assert result is False
+    assert ctrl._active_target_id is not None  # New target acquired
+    assert ctrl._yolo_target_pos == [0.6, 0.6]
+    assert ("click", 0.6, 0.6, "left") in inp.log
