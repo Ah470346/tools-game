@@ -28,14 +28,14 @@ def test_find_item_labels_dummy() -> None:
     frame = np.zeros((600, 800, 3), dtype=np.uint8)
     
     # Draw two white rectangles (simulating text box labels)
-    # Box 1: x=100, y=100, w=120, h=20
+    # Box 1: x=300, y=200, w=120, h=20
     cv2 = sys.modules.get("cv2")
     if cv2 is None:
         import cv2
-    cv2.rectangle(frame, (100, 100), (220, 120), (255, 255, 255), -1)
+    cv2.rectangle(frame, (300, 200), (420, 220), (255, 255, 255), -1)
     
-    # Box 2: x=300, y=200, w=80, h=25
-    cv2.rectangle(frame, (300, 200), (380, 225), (255, 255, 255), -1)
+    # Box 2: x=400, y=250, w=80, h=25
+    cv2.rectangle(frame, (400, 250), (480, 275), (255, 255, 255), -1)
 
     boxes = find_item_labels(frame)
     
@@ -44,10 +44,10 @@ def test_find_item_labels_dummy() -> None:
     
     # Verify coordinates roughly match our drawn boxes
     box_coords = [(b[0], b[1], b[2], b[3]) for b in boxes]
-    # Check if a box close to (100, 100, 120, 20) is found
-    match1 = any(abs(b[0] - 100) < 5 and abs(b[1] - 100) < 5 and abs(b[2] - 120) < 5 and abs(b[3] - 20) < 5 for b in box_coords)
-    # Check if a box close to (300, 200, 80, 25) is found
-    match2 = any(abs(b[0] - 300) < 5 and abs(b[1] - 200) < 5 and abs(b[2] - 80) < 5 and abs(b[3] - 25) < 5 for b in box_coords)
+    # Check if a box close to (300, 200, 120, 20) is found
+    match1 = any(abs(b[0] - 300) < 5 and abs(b[1] - 200) < 5 and abs(b[2] - 120) < 5 and abs(b[3] - 20) < 5 for b in box_coords)
+    # Check if a box close to (400, 250, 80, 25) is found
+    match2 = any(abs(b[0] - 400) < 5 and abs(b[1] - 250) < 5 and abs(b[2] - 80) < 5 and abs(b[3] - 25) < 5 for b in box_coords)
     
     assert match1 is True
     assert match2 is True

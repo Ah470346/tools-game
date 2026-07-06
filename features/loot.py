@@ -2,7 +2,9 @@ import json
 import logging
 import os
 import time
+import numpy as np
 from typing import Dict, Optional
+
 
 from backends.input_base import IInputBackend
 from backends.capture_base import ICaptureBackend
@@ -10,6 +12,28 @@ from vision.color_filter import find_item_labels
 from vision.ocr import TextReader
 
 logger = logging.getLogger(__name__)
+
+
+def is_gold_color(roi: np.ndarray) -> bool:
+    """
+    Checks if the cropped ROI contains the gold/orange border pixels of a gold label.
+    Gold border color in BGR: B in [30, 80], G in [95, 170], R in [165, 245].
+
+    Args:
+        roi (np.ndarray): Cropped image region of the label.
+
+    Returns:
+        bool: True if it matches the gold color signature, False otherwise.
+    """
+    if roi is None or roi.size == 0:
+        return False
+    import cv2
+    lower_gold = np.array([30, 95, 165], dtype=np.uint8)
+    upper_gold = np.array([80, 170, 245], dtype=np.uint8)
+    
+    mask = cv2.inRange(roi, lower_gold, upper_gold)
+    gold_pixels = cv2.countNonZero(mask)
+    return gold_pixels >= 12
 
 
 class LootCollector:
@@ -136,6 +160,23 @@ class LootCollector:
 
                 roi = frame[y_pad:y_pad + h_pad, x_pad:x_pad + w_pad]
                 
+                # Check for gold color signature first (extremely fast & bypasses OCR lag/errors)
+                if is_gold_color(roi):
+                    logger.info("LootCollector: Gold detected via color signature at x=%d, y=%d. Collecting.", x, y)
+                    self.input.key(self.show_names_key, "up")
+                    
+                    # Calculate click coordinate: center horizontally, immediately below the bottom edge vertically
+                    y_offset = self.config.get("click_y_offset_pixels", 20)
+                    xc_click = x + w / 2
+                    yc_click = y + h + y_offset
+
+                    xc_ratio = xc_click / width
+                    yc_ratio = yc_click / height
+
+                    self.input.click(xc_ratio, yc_ratio, button="left")
+                    time.sleep(0.8)
+                    return True
+
                 # Perform OCR read
                 text = self.ocr_reader.read_text(roi)
                 if text:
@@ -149,7 +190,7 @@ class LootCollector:
                     self.input.key(self.show_names_key, "up")
                     
                     # Calculate click coordinate: center horizontally, immediately below the bottom edge vertically
-                    y_offset = self.config.get("click_y_offset_pixels", 8)
+                    y_offset = self.config.get("click_y_offset_pixels", 20)
                     xc_click = x + w / 2
                     yc_click = y + h + y_offset
 
