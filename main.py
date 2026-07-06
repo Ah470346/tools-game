@@ -67,6 +67,14 @@ class StatsInputWrapper(IInputBackend):
     def pressed_keys(self, val: Set[str]) -> None:
         self._base.pressed_keys = val
 
+    @property
+    def key_history(self) -> list[str]:
+        return self._base.key_history
+
+    @key_history.setter
+    def key_history(self, val: list[str]) -> None:
+        self._base.key_history = val
+
     def release_all(self) -> None:
         self._base.release_all()
 

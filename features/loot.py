@@ -79,7 +79,15 @@ class LootCollector:
                 logger.debug("LootCollector: Ignored item '%s' (matches blacklist '%s')", text, blocked)
                 return False
 
-        # 2. Check whitelist
+        # Special heuristic for Gold (since only gold has numbers and letters like 'v', 'a', 'n', 'g' on screen)
+        # Priston Tale VTC Gold labels read like "33 v", "87 Vang", "145 Vàng"
+        has_digit = any(c.isdigit() for c in text_lower)
+        contains_gold_char = any(ch in text_lower for ch in ["v", "a", "n", "g"])
+        if has_digit and contains_gold_char:
+            logger.info("LootCollector: Match found via Gold heuristic! Item '%s'", text)
+            return True
+
+        # 2. Check whitelist (fallback for other items)
         for allowed in self.whitelist:
             if allowed in text_lower:
                 logger.info("LootCollector: Match found! Item '%s' matches whitelist '%s'", text, allowed)
