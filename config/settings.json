@@ -95,5 +95,11 @@
       "start": [0.59, 0.81],
       "end": [0.63, 0.83]
     }
+  },
+  "loot": {
+    "enabled": true,
+    "show_names_key": "a",
+    "whitelist": ["celesto", "devine", "mirage", "cel", "gold", "sheltom", "perfect"],
+    "blacklist": ["potion", "weak", "trash"]
   }
 }

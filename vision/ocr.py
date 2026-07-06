@@ -108,3 +108,54 @@ class TextReader:
         except Exception as e:
             logger.error("TextReader OCR reading failed: %s", e)
             return None
+
+    def read_text(self, roi: np.ndarray) -> Optional[str]:
+        """
+        Reads general text from a region of interest (e.g. item names).
+
+        Args:
+            roi (np.ndarray): Image region showing text.
+
+        Returns:
+            Optional[str]: The parsed string, or None if failed.
+        """
+        if not self.enabled or roi is None or roi.size == 0:
+            return None
+
+        try:
+            import cv2
+            # 1. Preprocessing
+            if len(roi.shape) == 3:
+                gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+            else:
+                gray = roi.copy()
+
+            # Upscale image
+            upscaled = cv2.resize(gray, (0, 0), fx=3.0, fy=3.0, interpolation=cv2.INTER_CUBIC)
+
+            # Thresholding
+            _, thresh = cv2.threshold(upscaled, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+            # Invert background if necessary
+            border_pixels = np.concatenate([
+                thresh[0, :],
+                thresh[-1, :],
+                thresh[:, 0],
+                thresh[:, -1]
+            ])
+            if np.mean(border_pixels) < 127:
+                thresh = cv2.bitwise_not(thresh)
+
+            # OCR Config:
+            # General text reading using PSM 7 (single line)
+            custom_config = r"--psm 7"
+            
+            # Run Tesseract
+            text = self.pytesseract.image_to_string(thresh, config=custom_config).strip()
+            logger.debug("TextReader OCR read_text output: '%s'", text)
+
+            return text if text else None
+        except Exception as e:
+            logger.error("TextReader read_text failed: %s", e)
+            return None
+

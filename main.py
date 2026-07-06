@@ -173,9 +173,16 @@ def run_bot(active: bool = False, loop_delay: float = 0.1, max_duration: Optiona
         simulator=input_backend, 
         config=settings.get("combat", {})
     )
+    from features.loot import LootCollector
+    loot_collector = LootCollector(
+        capture=capture_backend, 
+        simulator=input_backend, 
+        config=settings.get("loot", {})
+    )
 
     start_time = time.time()
     last_log_time = start_time
+    was_attacking = False
 
     logger.info("Main FSM loop started. Press F9 to Pause/Resume, F12 to Stop.")
 
@@ -197,7 +204,20 @@ def run_bot(active: bool = False, loop_delay: float = 0.1, max_duration: Optiona
                 
                 # Execute combat logic if inputs are not blocked
                 if not input_backend.block_inputs:
-                    combat_controller.run_combat_cycle()
+                    is_attacking = combat_controller.run_combat_cycle()
+                    # Transition to LOOTING if we were attacking but now target is lost/dead
+                    if was_attacking and not is_attacking:
+                        fsm.transition_to("LOOTING", "Target eliminated, checking ground loot")
+                    was_attacking = is_attacking
+            elif fsm.state == "LOOTING":
+                # Execute pot checks
+                potion_manager.check_and_use_pots()
+                
+                if not input_backend.block_inputs:
+                    has_more_loot = loot_collector.run_loot_cycle()
+                    if not has_more_loot:
+                        fsm.transition_to("FARMING", "Loot cycle complete, returning to farming")
+                        was_attacking = False
             elif fsm.state == "PAUSED":
                 # Bot is paused, don't execute actions
                 pass
