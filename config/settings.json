@@ -83,5 +83,17 @@
   "tracker": {
     "iou_threshold": 0.3,
     "max_lost_frames": 15
+  },
+  "ocr": {
+    "enabled": true,
+    "tesseract_path": "C:\\Program Files\\Tesseract-OCR\\tesseract.exe",
+    "hp_ocr_region": {
+      "start": [0.41, 0.81],
+      "end": [0.45, 0.83]
+    },
+    "mp_ocr_region": {
+      "start": [0.59, 0.81],
+      "end": [0.63, 0.83]
+    }
   }
 }
