@@ -30,6 +30,9 @@ from core.hotkey_manager import HotkeyManager
 
 
 def main() -> None:
+    import logging
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+    
     print("====================================================================")
     print("         Task 1.6 - Manual Hotkey Validation Script                  ")
     print("====================================================================")
