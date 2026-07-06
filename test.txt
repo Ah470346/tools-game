@@ -1,0 +1,76 @@
+Mode: ACTIVE (Simulating real keys/clicks)
+Duration: 1.0 hours (3600 seconds)    
+Instructions:
+  1. Press [F9] to PAUSE/RESUME the bot.
+  2. Press [F12] to EMERGENCY STOP and exit cleanly.
+  3. Press [Ctrl + C] to force terminate in terminal.
+====================================================================        
+
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+  [WARNING] ACTIVE MODE REQUESTED BUT 
+SCRIPT IS NOT RUNNING AS ADMINISTRATOR!
+  Direct input simulation will be ignored by GameGuard / Windows UIPI.      
+  Please restart this terminal as Administrator.
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+2026-07-06 20:42:10,869 [INFO] main: Initializing MVP Lite components...    
+2026-07-06 20:42:10,870 [INFO] backends.capture_direct: DirectCapture: using DXcam backend.
+2026-07-06 20:42:10,870 [INFO] main: DirectCapture backend initialized.     
+2026-07-06 20:42:10,870 [WARNING] backends.input_direct: [WARNING] Script is NOT running as Administrator! Games protected by GameGuard (like Priston Tale) run with elevated privileges. If this script is not elevated, Windows UIPI will silently block all simulated mouse/keyboard inputs. Please run the terminal as Administrator.
+2026-07-06 20:42:10,870 [INFO] main: DirectInput backend initialized (Active Mode).
+2026-07-06 20:42:10,870 [INFO] core.state_machine: Transition: IDLE -> FARMING | Reason: System initialized and started
+2026-07-06 20:42:10,969 [INFO] core.hotkey_manager: Global hotkeys registered: F12 = Emergency Stop, F9 = Pause/Resume
+2026-07-06 20:42:10,991 [INFO] vision.ocr: TextReader: OCR engine initialized successfully.
+2026-07-06 20:42:10,991 [INFO] features.auto_pot: PotionManager: OCR enabled with HP region: {'start': [0.41, 0.81], 'end': [0.45, 0.83]}, MP region: {'start': [0.59, 0.81], 'end': [0.63, 0.83]}
+2026-07-06 20:42:10,993 [INFO] vision.ocr: TextReader: OCR engine initialized successfully.
+2026-07-06 20:42:10,993 [INFO] features.loot: LootCollector initialized. Enabled: False, show_names_key: a        
+2026-07-06 20:42:10,993 [INFO] main: Main FSM loop started. Press F9 to Pause/Resume, F12 to Stop.
+2026-07-06 20:42:11,357 [INFO] features.combat: CombatController: Lazily loading MonsterDetector with model_path: 
+models/monster.onnx, delta_threshold: 
+0.010000
+2026-07-06 20:42:11,403 [INFO] vision.detector: Available ONNX providers: ['AzureExecutionProvider', 'CPUExecutionProvider']
+2026-07-06 20:42:11,403 [INFO] vision.detector: Loading ONNX model using providers: ['CPUExecutionProvider']      
+2026-07-06 20:42:11,559 [INFO] features.combat: CombatController: Panel visible without lock — re-acquired target 
+ID 1 at (0.624, 0.542)
+2026-07-06 20:42:11,559 [INFO] features.combat: CombatController: Clicking LMB at (0.624, 0.542)
+2026-07-06 20:42:11,918 [INFO] features.combat: CombatController: Clicking RMB at (0.624, 0.542)
+2026-07-06 20:42:12,647 [INFO] features.combat: CombatController: Clicking LMB at (0.613, 0.561)
+2026-07-06 20:42:13,001 [INFO] features.combat: CombatController: Clicking RMB at (0.613, 0.561)
+2026-07-06 20:42:13,714 [INFO] features.combat: CombatController: Clicking LMB at (0.647, 0.596)
+2026-07-06 20:42:14,069 [INFO] features.combat: CombatController: Clicking RMB at (0.647, 0.596)
+2026-07-06 20:42:14,796 [INFO] features.combat: CombatController: Clicking LMB at (0.656, 0.595)
+2026-07-06 20:42:15,150 [INFO] features.combat: CombatController: Clicking RMB at (0.656, 0.595)
+2026-07-06 20:42:15,877 [INFO] features.combat: CombatController: Clicking LMB at (0.653, 0.590)
+2026-07-06 20:42:16,230 [INFO] features.combat: CombatController: Clicking RMB at (0.653, 0.590)
+2026-07-06 20:42:16,956 [INFO] features.combat: CombatController: Re-associated to track ID 7
+2026-07-06 20:42:16,956 [INFO] features.combat: CombatController: Clicking LMB at (0.598, 0.555)
+2026-07-06 20:42:17,309 [INFO] features.combat: CombatController: Clicking RMB at (0.598, 0.555)
+2026-07-06 20:42:18,036 [INFO] features.combat: CombatController: Clicking LMB at (0.598, 0.555)
+2026-07-06 20:42:18,389 [INFO] features.combat: CombatController: Clicking RMB at (0.598, 0.555)
+2026-07-06 20:42:19,106 [INFO] features.combat: CombatController: Clicking LMB at (0.598, 0.555)
+2026-07-06 20:42:19,826 [INFO] features.combat: CombatController: Clicking LMB at (0.598, 0.555)
+2026-07-06 20:42:20,181 [INFO] features.combat: CombatController: Clicking RMB at (0.598, 0.555)
+2026-07-06 20:42:20,903 [INFO] features.combat: CombatController: Clicking LMB at (0.598, 0.555)
+2026-07-06 20:42:21,256 [INFO] features.combat: CombatController: Clicking RMB at (0.598, 0.555)
+2026-07-06 20:42:21,979 [INFO] features.combat: CombatController: Clicking LMB at (0.598, 0.555)
+2026-07-06 20:42:22,332 [INFO] features.combat: CombatController: Clicking RMB at (0.598, 0.555)
+2026-07-06 20:42:22,686 [INFO] main: --- BOT STATISTICS ---
+  Uptime: 10.7s
+  FSM State: FARMING
+  Attacks (LMB/RMB): 11 / 10
+  Target Key Presses: 0
+  Potions (HP/MP/STM): 0 / 0 / 0      
+----------------------
+2026-07-06 20:42:22,999 [INFO] features.combat: CombatController: Clicking LMB at (0.598, 0.555)
+2026-07-06 20:42:23,055 [INFO] main: FSM Loop interrupted via Ctrl+C.       
+2026-07-06 20:42:23,055 [INFO] core.hotkey_manager: Global hotkeys unregistered.
+2026-07-06 20:42:23,055 [INFO] main: Bot execution terminated. Final stats logged below.
+2026-07-06 20:42:23,056 [INFO] main: --- FINAL BOT STATISTICS ---
+  Uptime: 12.1s
+  Attacks (LMB/RMB): 12 / 10
+  Target Key Presses: 0
+  Potions (HP/MP/STM): 0 / 0 / 0      
+  Keys/Clicks Pressed: 22
+  Key Event History: click_left(0.62,0.54), click_right(0.62,0.54), click_left(0.61,0.56), click_right(0.61,0.56), click_left(0.65,0.60), click_right(0.65,0.60), click_left(0.66,0.59), click_right(0.66,0.59), click_left(0.65,0.59), click_right(0.65,0.59), click_left(0.60,0.55), click_right(0.60,0.55), click_left(0.60,0.55), click_right(0.60,0.55), click_left(0.60,0.55), click_left(0.60,0.55), click_right(0.60,0.55), click_left(0.60,0.55), click_right(0.60,0.55), click_left(0.60,0.55), click_right(0.60,0.55), click_left(0.60,0.55)
+---------------
