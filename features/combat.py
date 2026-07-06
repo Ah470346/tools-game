@@ -96,7 +96,12 @@ class CombatController:
         self._yolo_target_pos: Optional[list] = None
         self._active_target_id: Optional[int] = None
         self._last_yolo_target_time = 0.0
-        self._target_lock_start_time = 0.0
+        self._lock_grace_sec = self.config.get("target_lock_grace_sec", 2.0)
+        self._exclusion_zone = self.config.get("exclusion_zone_ratio", 0.06)
+
+        # Blacklist for unreachable/stuck targets
+        self._blacklisted_targets: dict[int, float] = {}
+        self._blacklist_duration = self.config.get("blacklist_duration_sec", 15.0)
 
     def _init_detector(self) -> None:
         """Lazily initializes the MonsterDetector."""
@@ -139,6 +144,48 @@ class CombatController:
         logger.debug("CombatController: Target lock check BGR=[%d, %d, %d], is_locked=%s", b, g, r, is_locked)
         return is_locked
 
+    def _is_target_panel_visible(self, frame: np.ndarray) -> bool:
+        """Checks if the target info panel (HP bar) is visible in the top-right corner.
+
+        When a monster is targeted in Priston Tale, a panel with its portrait,
+        name, and HP bar appears in the top-right corner. This method checks
+        for red HP bar pixels in that region to determine if a target is active.
+        """
+        check_cfg = self.config.get("target_check", {})
+        if not check_cfg.get("enabled", False):
+            return False
+
+        region = check_cfg.get("region")
+        if not region:
+            return False
+
+        start = region.get("start", [0.86, 0.12])
+        end = region.get("end", [0.97, 0.23])
+
+        height, width = frame.shape[:2]
+        x1 = max(0, int(start[0] * (width - 1)))
+        y1 = max(0, int(start[1] * (height - 1)))
+        x2 = min(width, int(end[0] * (width - 1)))
+        y2 = min(height, int(end[1] * (height - 1)))
+
+        if x2 <= x1 or y2 <= y1:
+            return False
+
+        roi = frame[y1:y2, x1:x2]
+        b_ch = roi[:, :, 0].astype(np.int32)
+        g_ch = roi[:, :, 1].astype(np.int32)
+        r_ch = roi[:, :, 2].astype(np.int32)
+
+        red_mask = (r_ch > 120) & (r_ch > 1.3 * g_ch) & (r_ch > 1.4 * b_ch)
+        red_ratio = float(np.sum(red_mask)) / max(red_mask.size, 1)
+
+        min_ratio = check_cfg.get("min_red_ratio", 0.02)
+        is_visible = red_ratio >= min_ratio
+
+        logger.debug("CombatController: Target panel red_ratio=%.4f (threshold=%.4f) -> visible=%s",
+                     red_ratio, min_ratio, is_visible)
+        return is_visible
+
     def has_target(self, frame: np.ndarray) -> bool:
         """
         Determines whether an active target is locked on screen.
@@ -158,104 +205,109 @@ class CombatController:
 
         elif self.target_source == "yolo":
             now = time.time()
-            is_locked = self._check_target_lock(frame)
+            panel_visible = self._is_target_panel_visible(frame)
 
-            # Target Lock Timeout / Stuck Detection
-            if is_locked:
-                if self._target_lock_start_time == 0.0:
-                    self._target_lock_start_time = now
-                
-                timeout = self.config.get("target_lock_timeout_sec", 5.0)
-                if now - self._target_lock_start_time > timeout:
-                    cancel_key = self.config.get("cancel_target_key", "esc")
-                    logger.info("CombatController: Target lock timeout (stuck?). Pressing '%s' to unlock.", cancel_key)
-                    self.input.key(cancel_key, "press")
-                    self._yolo_target_pos = None
-                    self._active_target_id = None
-                    self._target_lock_start_time = 0.0
-                    self._last_yolo_target_time = 0.0
-                    return False
-            else:
-                self._target_lock_start_time = 0.0
+            # Grace period: just clicked a new target, panel may not appear instantly
+            is_grace = (self._yolo_target_pos is not None and
+                        now - self._last_yolo_target_time < self._lock_grace_sec)
 
-            lock_duration = self.config.get("yolo_lock_duration_sec", 1.2)
-            is_pending = self._yolo_target_pos is not None and (now - self._last_yolo_target_time < lock_duration)
+            if panel_visible or is_grace:
+                # Target is alive in-game — stay locked, update click position from YOLO
+                try:
+                    self._init_detector()
+                    if self.detector is not None:
+                        detections = self.detector.detect(frame)
+                        tracked = self.tracker.update(detections)
 
-            if not is_locked and not is_pending:
-                self._yolo_target_pos = None
+                        if self._active_target_id is not None and tracked:
+                            match = next((t for t in tracked
+                                          if t["track_id"] == self._active_target_id), None)
+                            if match:
+                                self._yolo_target_pos = [match["box"][0], match["box"][1]]
+                                logger.debug("CombatController: Tracking target ID %d at (%.3f, %.3f)",
+                                             self._active_target_id, match["box"][0], match["box"][1])
+                            elif self._yolo_target_pos and tracked:
+                                # Track ID lost but panel still visible — re-associate to closest
+                                best = min(tracked, key=lambda t: np.sqrt(
+                                    (t["box"][0] - self._yolo_target_pos[0]) ** 2 +
+                                    (t["box"][1] - self._yolo_target_pos[1]) ** 2))
+                                d = np.sqrt((best["box"][0] - self._yolo_target_pos[0]) ** 2 +
+                                            (best["box"][1] - self._yolo_target_pos[1]) ** 2)
+                                if d < 0.15:
+                                    self._active_target_id = best["track_id"]
+                                    self._yolo_target_pos = [best["box"][0], best["box"][1]]
+                                    logger.info("CombatController: Re-associated to track ID %d",
+                                                self._active_target_id)
+                except Exception as e:
+                    logger.error("CombatController: YOLO position update error: %s", e)
+
+                return True
+
+            # Panel not visible and grace expired — target died or was lost (or failed to lock)
+            if self._active_target_id is not None:
+                # If we had a recent target but panel never showed, it might be stuck/unreachable.
+                # Blacklist it so we don't keep trying to click the same unreachable monster.
+                if not panel_visible and now - self._last_yolo_target_time >= self._lock_grace_sec:
+                    logger.warning("CombatController: Failed to lock target ID %d. Blacklisting for %.1fs.",
+                                   self._active_target_id, self._blacklist_duration)
+                    self._blacklisted_targets[self._active_target_id] = now
+                else:
+                    logger.info("CombatController: Target panel gone. Clearing target ID %d.",
+                                self._active_target_id)
                 self._active_target_id = None
+                self._yolo_target_pos = None
 
-            # Always run YOLO to track / update position if locked or pending
+            # Clean up expired blacklist entries
+            expired = [tid for tid, t in self._blacklisted_targets.items()
+                       if now - t > self._blacklist_duration]
+            for tid in expired:
+                del self._blacklisted_targets[tid]
+
+            # Find a new target via YOLO and click on it to lock
             try:
                 self._init_detector()
+                if self.detector is not None:
+                    detections = self.detector.detect(frame)
+                    tracked = self.tracker.update(detections)
+
+                    if tracked:
+                        # Filter out detections inside exclusion zone (player character area)
+                        # AND filter out blacklisted targets
+                        candidates = []
+                        for t in tracked:
+                            if t["track_id"] in self._blacklisted_targets:
+                                continue
+                            
+                            xc, yc, w, h = t["box"]
+                            # The player character is at the screen center (0.5, 0.5).
+                            # If the center falls inside the bounding box, it's the player.
+                            is_player = (xc - w/2 <= 0.5 <= xc + w/2) and (yc - h/2 <= 0.5 <= yc + h/2)
+                            
+                            # Elliptical exclusion zone (taller than wide) to cover the rest of the character.
+                            dx = abs(xc - 0.5)
+                            dy = abs(yc - 0.5)
+                            in_exclusion_zone = (dx**2 + (dy / 2.0)**2) <= (self._exclusion_zone ** 2)
+                            
+                            if not is_player and not in_exclusion_zone:
+                                candidates.append(t)
+
+                        if candidates:
+                            best = min(candidates, key=lambda t: np.sqrt(
+                                (t["box"][0] - 0.5) ** 2 + (t["box"][1] - 0.5) ** 2))
+                            dist = np.sqrt((best["box"][0] - 0.5) ** 2 +
+                                           (best["box"][1] - 0.5) ** 2)
+                            engage_range = self.config.get("engage_range_ratio", 1.0)
+
+                            if dist <= engage_range:
+                                self._active_target_id = best["track_id"]
+                                self._yolo_target_pos = [best["box"][0], best["box"][1]]
+                                self._last_yolo_target_time = now
+                                logger.info("CombatController: Clicking new target ID %d at (%.3f, %.3f), dist=%.3f",
+                                            self._active_target_id, best["box"][0], best["box"][1], dist)
+                                self.input.click(best["box"][0], best["box"][1], button="left")
+                                return False
             except Exception as e:
-                logger.error("CombatController: Failed to initialize YOLO detector: %s", e)
-                return is_locked or is_pending
-
-            if self.detector is None:
-                logger.error("CombatController: Detector instance is not available.")
-                return is_locked or is_pending
-
-            detections = self.detector.detect(frame)
-            tracked_objects = self.tracker.update(detections)
-
-            # If we already have an active target track ID
-            if self._active_target_id is not None:
-                # Check if it is still present in active tracks
-                matched_track = next((t for t in tracked_objects if t["track_id"] == self._active_target_id), None)
-                if matched_track is not None:
-                    # Update target coordinates
-                    box = matched_track["box"]
-                    self._yolo_target_pos = [box[0], box[1]]
-                    self._last_yolo_target_time = now
-                    logger.debug("CombatController: Tracking active target ID %d at (%.3f, %.3f)", self._active_target_id, box[0], box[1])
-                    return True
-                else:
-                    # If target lock is still active in game, try to re-associate to closest track to last position
-                    if is_locked and tracked_objects and self._yolo_target_pos is not None:
-                        best_track = None
-                        min_dist = float("inf")
-                        for t in tracked_objects:
-                            box = t["box"]
-                            dist = np.sqrt((box[0] - self._yolo_target_pos[0])**2 + (box[1] - self._yolo_target_pos[1])**2)
-                            if dist < min_dist:
-                                min_dist = dist
-                                best_track = t
-                        
-                        if best_track is not None and min_dist < 0.2: # close enough (20% of screen width)
-                            self._active_target_id = best_track["track_id"]
-                            self._yolo_target_pos = [best_track["box"][0], best_track["box"][1]]
-                            self._last_yolo_target_time = now
-                            logger.info("CombatController: Re-associated active target to ID %d at (%.3f, %.3f)", self._active_target_id, best_track["box"][0], best_track["box"][1])
-                            return True
-                    
-                    # Otherwise, we lost it
-                    logger.info("CombatController: Target ID %d lost.", self._active_target_id)
-                    self._active_target_id = None
-                    self._yolo_target_pos = None
-
-            # If no active target lock, look for new target closest to center
-            if not tracked_objects:
-                return False
-
-            best_track = None
-            min_dist = float("inf")
-            for t in tracked_objects:
-                box = t["box"]
-                dist = np.sqrt((box[0] - 0.5) ** 2 + (box[1] - 0.5) ** 2)
-                if dist < min_dist:
-                    min_dist = dist
-                    best_track = t
-
-            engage_range = self.config.get("engage_range_ratio", 1.0)
-            if best_track is not None and min_dist <= engage_range:
-                box = best_track["box"]
-                self._active_target_id = best_track["track_id"]
-                self._yolo_target_pos = [box[0], box[1]]
-                self._last_yolo_target_time = now
-                self._target_lock_start_time = now
-                logger.info("CombatController: Acquired new target ID %d at (%.3f, %.3f), dist=%.3f", self._active_target_id, box[0], box[1], min_dist)
-                return True
+                logger.error("CombatController: YOLO target search error: %s", e)
 
             return False
 
@@ -305,14 +357,15 @@ class CombatController:
             self.execute_combat_actions()
             return True
         else:
-            # No target active: trigger tab key to cycle/acquire target
-            now = time.time()
-            if now - self._last_tab_time >= self._current_tab_cooldown:
-                logger.info("CombatController: No target. Pressing key '%s' to acquire target.", self.tab_key)
-                self.input.key(self.tab_key, "press")
-                self._last_tab_time = now
-                # Randomize tab interval slightly
-                self._current_tab_cooldown = get_random_delay(self.tab_interval_sec * 0.9, self.tab_interval_sec * 1.1)
-            else:
-                logger.debug("CombatController: Tab targeting on cooldown (elapsed: %.2fs)", now - self._last_tab_time)
+            # No target active
+            if self.target_source == "tab":
+                now = time.time()
+                if now - self._last_tab_time >= self._current_tab_cooldown:
+                    logger.info("CombatController: No target. Pressing key '%s' to acquire target.", self.tab_key)
+                    self.input.key(self.tab_key, "press")
+                    self._last_tab_time = now
+                    self._current_tab_cooldown = get_random_delay(self.tab_interval_sec * 0.9, self.tab_interval_sec * 1.1)
+                else:
+                    logger.debug("CombatController: Tab targeting on cooldown (elapsed: %.2fs)", now - self._last_tab_time)
+            # In YOLO mode, target acquisition is handled inside has_target()
             return False
