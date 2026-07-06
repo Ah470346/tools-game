@@ -99,6 +99,13 @@ class CombatController:
         self._lock_grace_sec = self.config.get("target_lock_grace_sec", 2.0)
         self._exclusion_zone = self.config.get("exclusion_zone_ratio", 0.06)
 
+        # Last time YOLO actually confirmed the target's position on screen.
+        # Guards against clicking a frozen coordinate after the monster is lost.
+        self._last_pos_confirm_time = 0.0
+        self._stale_timeout = self.config.get("stale_target_timeout_sec", 1.5)
+        self._reassoc_delay = self.config.get("reassociate_delay_sec", 0.5)
+        self._reassoc_max_dist = self.config.get("reassociate_max_dist_ratio", 0.08)
+
         # Blacklist for unreachable/stuck targets
         self._blacklisted_targets: dict[int, float] = {}
         self._blacklist_duration = self.config.get("blacklist_duration_sec", 15.0)
@@ -186,6 +193,19 @@ class CombatController:
                      red_ratio, min_ratio, is_visible)
         return is_visible
 
+    def _is_player_track(self, t: dict) -> bool:
+        """Returns True if a track is (or overlaps) the player character at screen center."""
+        xc, yc, w, h = t["box"]
+        # The player character is at the screen center (0.5, 0.5).
+        # If the center falls inside the bounding box, it's the player.
+        is_player = (xc - w / 2 <= 0.5 <= xc + w / 2) and (yc - h / 2 <= 0.5 <= yc + h / 2)
+
+        # Elliptical exclusion zone (taller than wide) to cover the rest of the character.
+        dx = abs(xc - 0.5)
+        dy = abs(yc - 0.5)
+        in_exclusion_zone = (dx ** 2 + (dy / 2.0) ** 2) <= (self._exclusion_zone ** 2)
+        return is_player or in_exclusion_zone
+
     def _select_best_target(self, tracked: list) -> Optional[dict]:
         """Selects the closest valid monster from tracked detections.
 
@@ -198,23 +218,9 @@ class CombatController:
         Returns:
             Optional[dict]: The best track, or None if no valid target is available.
         """
-        candidates = []
-        for t in tracked:
-            if t["track_id"] in self._blacklisted_targets:
-                continue
-
-            xc, yc, w, h = t["box"]
-            # The player character is at the screen center (0.5, 0.5).
-            # If the center falls inside the bounding box, it's the player.
-            is_player = (xc - w / 2 <= 0.5 <= xc + w / 2) and (yc - h / 2 <= 0.5 <= yc + h / 2)
-
-            # Elliptical exclusion zone (taller than wide) to cover the rest of the character.
-            dx = abs(xc - 0.5)
-            dy = abs(yc - 0.5)
-            in_exclusion_zone = (dx ** 2 + (dy / 2.0) ** 2) <= (self._exclusion_zone ** 2)
-
-            if not is_player and not in_exclusion_zone:
-                candidates.append(t)
+        candidates = [t for t in tracked
+                      if t["track_id"] not in self._blacklisted_targets
+                      and not self._is_player_track(t)]
 
         if not candidates:
             return None
@@ -265,20 +271,31 @@ class CombatController:
                                           if t["track_id"] == self._active_target_id), None)
                             if match:
                                 self._yolo_target_pos = [match["box"][0], match["box"][1]]
+                                self._last_pos_confirm_time = now
                                 logger.debug("CombatController: Tracking target ID %d at (%.3f, %.3f)",
                                              self._active_target_id, match["box"][0], match["box"][1])
-                            elif self._yolo_target_pos and tracked:
-                                # Track ID lost but panel still visible — re-associate to closest
-                                best = min(tracked, key=lambda t: np.sqrt(
-                                    (t["box"][0] - self._yolo_target_pos[0]) ** 2 +
-                                    (t["box"][1] - self._yolo_target_pos[1]) ** 2))
-                                d = np.sqrt((best["box"][0] - self._yolo_target_pos[0]) ** 2 +
-                                            (best["box"][1] - self._yolo_target_pos[1]) ** 2)
-                                if d < 0.15:
-                                    self._active_target_id = best["track_id"]
-                                    self._yolo_target_pos = [best["box"][0], best["box"][1]]
-                                    logger.info("CombatController: Re-associated to track ID %d",
-                                                self._active_target_id)
+                            elif (self._yolo_target_pos and
+                                  now - self._last_pos_confirm_time >= self._reassoc_delay):
+                                # Track ID lost beyond the coast delay (not just a one-frame
+                                # detection flicker) — re-associate to the closest valid track
+                                # near the old position. Switching on a single missed frame
+                                # would jump to a neighboring monster while the current one
+                                # is still alive.
+                                candidates = [t for t in tracked
+                                              if t["track_id"] not in self._blacklisted_targets
+                                              and not self._is_player_track(t)]
+                                if candidates:
+                                    best = min(candidates, key=lambda t: np.sqrt(
+                                        (t["box"][0] - self._yolo_target_pos[0]) ** 2 +
+                                        (t["box"][1] - self._yolo_target_pos[1]) ** 2))
+                                    d = np.sqrt((best["box"][0] - self._yolo_target_pos[0]) ** 2 +
+                                                (best["box"][1] - self._yolo_target_pos[1]) ** 2)
+                                    if d < self._reassoc_max_dist:
+                                        self._active_target_id = best["track_id"]
+                                        self._yolo_target_pos = [best["box"][0], best["box"][1]]
+                                        self._last_pos_confirm_time = now
+                                        logger.info("CombatController: Re-associated to track ID %d",
+                                                    self._active_target_id)
 
                         # Panel is visible but we have no confirmed target position
                         # (e.g. previous target just died and its panel still lingers).
@@ -291,6 +308,7 @@ class CombatController:
                                 self._active_target_id = best["track_id"]
                                 self._yolo_target_pos = [best["box"][0], best["box"][1]]
                                 self._last_yolo_target_time = now
+                                self._last_pos_confirm_time = now
                                 logger.info("CombatController: Panel visible without lock — "
                                             "re-acquired target ID %d at (%.3f, %.3f)",
                                             self._active_target_id, best["box"][0], best["box"][1])
@@ -301,6 +319,16 @@ class CombatController:
                 # Never return True without a position — that would trigger a click at
                 # click_position (screen center = the player character).
                 if self._yolo_target_pos is not None:
+                    # If YOLO hasn't confirmed this position recently, the monster is
+                    # gone or obscured — keeping on clicking the frozen coordinate
+                    # would just walk the character across the map. Drop the target.
+                    if now - self._last_pos_confirm_time > self._stale_timeout:
+                        logger.warning("CombatController: Target ID %s position stale for >%.1fs. "
+                                       "Dropping target.",
+                                       self._active_target_id, self._stale_timeout)
+                        self._active_target_id = None
+                        self._yolo_target_pos = None
+                        return False
                     return True
                 return False
 
@@ -339,6 +367,7 @@ class CombatController:
                         self._active_target_id = best["track_id"]
                         self._yolo_target_pos = [best["box"][0], best["box"][1]]
                         self._last_yolo_target_time = now
+                        self._last_pos_confirm_time = now
                         logger.info("CombatController: Clicking new target ID %d at (%.3f, %.3f), dist=%.3f",
                                     self._active_target_id, best["box"][0], best["box"][1], dist)
                         self.input.click(best["box"][0], best["box"][1], button="left")

@@ -22,6 +22,9 @@
     "engage_range_ratio": 0.5,
     "exclusion_zone_ratio": 0.06,
     "target_lock_grace_sec": 2.0,
+    "stale_target_timeout_sec": 1.5,
+    "reassociate_delay_sec": 0.5,
+    "reassociate_max_dist_ratio": 0.08,
     "target_check": {
       "enabled": true,
       "check_pixel": [0.87, 0.20],
