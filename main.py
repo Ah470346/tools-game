@@ -248,17 +248,29 @@ def run_bot(active: bool = False, loop_delay: float = 0.1, max_duration: Optiona
         hotkey_manager.stop_listening()
         input_backend.release_all()
         logger.info("Bot execution terminated. Final stats logged below.")
+        
+        # Log chronological key/click history (truncated if too long to prevent log bloat)
+        history = input_backend.key_history
+        if len(history) <= 150:
+            history_str = ", ".join(history)
+        else:
+            history_str = f"{', '.join(history[:100])} ... [truncated {len(history)-150} items] ... {', '.join(history[-50:])}"
+            
         logger.info(
             "--- FINAL BOT STATISTICS ---\n"
             "  Uptime: %.1fs\n"
             "  Attacks (LMB/RMB): %d / %d\n"
             "  Target Key Presses: %d\n"
             "  Potions (HP/MP/STM): %d / %d / %d\n"
+            "  Keys/Clicks Pressed: %d\n"
+            "  Key Event History: %s\n"
             "----------------------------",
             time.time() - start_time,
             input_backend.lmb_click_count, input_backend.rmb_click_count,
             input_backend.tab_count,
-            input_backend.hp_pot_count, input_backend.mp_pot_count, input_backend.stm_pot_count
+            input_backend.hp_pot_count, input_backend.mp_pot_count, input_backend.stm_pot_count,
+            len(history),
+            history_str
         )
 
 

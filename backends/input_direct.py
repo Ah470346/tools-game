@@ -127,6 +127,7 @@ class DirectInput(IInputBackend):
         hwnd = self._get_hwnd_or_raise()
         screen_x, screen_y = ratio_to_screen(x_ratio, y_ratio, hwnd)
         logger.debug("DirectInput.click: ratio(%.3f, %.3f) -> screen(%d, %d) button=%s", x_ratio, y_ratio, screen_x, screen_y, button)
+        self.key_history.append(f"click_{button}({x_ratio:.2f},{y_ratio:.2f})")
         
         import sys
         if sys.platform == "win32":
@@ -156,6 +157,8 @@ class DirectInput(IInputBackend):
             self.pressed_keys.add(name)
         elif action == "up":
             self.pressed_keys.discard(name)
+
+        self.key_history.append(f"{name}_{action}")
 
         if not _HAS_PYDIRECTINPUT:
             logger.debug("[MOCK] DirectInput.key(%s, %s)", name, action)

@@ -75,6 +75,7 @@ class MockInput(IInputBackend):
             return
         entry = ("click", x_ratio, y_ratio, button)
         self.log.append(entry)
+        self.key_history.append(f"click_{button}({x_ratio:.2f},{y_ratio:.2f})")
         logger.debug("MockInput.click(%.3f, %.3f, %s)", x_ratio, y_ratio, button)
 
     def key(self, name: str, action: str = "press") -> None:
@@ -96,6 +97,7 @@ class MockInput(IInputBackend):
 
         entry = ("key", name, action)
         self.log.append(entry)
+        self.key_history.append(f"{name}_{action}")
         logger.debug("MockInput.key(%s, %s)", name, action)
 
     def clear(self) -> None:

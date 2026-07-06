@@ -20,6 +20,7 @@ class IInputBackend(ABC):
         """Initializes the base input backend, tracking pressed keys and blocking status."""
         self.pressed_keys: set[str] = set()
         self.block_inputs: bool = False
+        self.key_history: list[str] = []
 
     def release_all(self) -> None:
         """
