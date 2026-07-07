@@ -167,13 +167,30 @@
     "max_scan_duration_s": 5.0,
     "hover_confirm_delay_ms": 150,
     "pickup_delay_ms": 100,
+    "debug_save_frames": false,
+    "probe": {
+      "x_offsets_px": [0, -14, 14],
+      "y_offsets_px": [20, 12, 30],
+      "dedupe_dist_px": 8,
+      "max_probes_per_cycle": 24
+    },
+    "highlight": {
+      "brighten_delta": 30,
+      "min_changed_ratio": 0.04,
+      "argmax_margin": 1.5
+    },
     "label_detect": {
       "min_brightness_dark": 30,
       "max_brightness_dark": 90,
       "min_brightness_bright": 150,
       "min_label_width": 30,
       "min_label_height": 10,
-      "max_label_height": 60
+      "max_label_height": 60,
+      "row_split_enabled": true,
+      "single_row_max_height_px": 22,
+      "expected_row_height_px": 16,
+      "max_stack_rows": 5,
+      "dedupe_iou": 0.85
     }
   }
 }
