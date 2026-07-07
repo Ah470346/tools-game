@@ -13,6 +13,7 @@ from typing import Dict, Optional, Set
 
 from backends.capture_direct import DirectCapture
 from backends.input_direct import DirectInput
+from backends.input_background import BackgroundInput
 from backends.mock_backends import MockCapture, MockInput
 from backends.input_base import IInputBackend
 from core.coordinates import find_window_by_title
@@ -103,7 +104,10 @@ class StatsInputWrapper(IInputBackend):
 
 
 def load_settings() -> dict:
-    base_dir = os.path.dirname(os.path.abspath(__file__))
+    if getattr(sys, 'frozen', False):
+        base_dir = os.path.dirname(sys.executable)
+    else:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
     config_path = os.path.join(base_dir, "config", "settings.json")
     if os.path.exists(config_path):
         try:
@@ -151,8 +155,13 @@ def run_bot(active: bool = False, loop_delay: float = 0.1, max_duration: Optiona
 
     # Initialize Input Backend
     if active and sys.platform == "win32" and hwnd:
-        raw_input = DirectInput(window_title=window_title)
-        logger.info("DirectInput backend initialized (Active Mode).")
+        mode = settings.get("mode", "direct")
+        if mode == "background":
+            raw_input = BackgroundInput(window_title=window_title)
+            logger.info("BackgroundInput backend initialized (Background Mode).")
+        else:
+            raw_input = DirectInput(window_title=window_title)
+            logger.info("DirectInput backend initialized (Active Mode).")
     else:
         raw_input = MockInput()
         logger.info("MockInput backend initialized (Dry-Run / Safe Mode).")
@@ -181,6 +190,10 @@ def run_bot(active: bool = False, loop_delay: float = 0.1, max_duration: Optiona
         simulator=input_backend, 
         config=settings.get("combat", {})
     )
+
+    # Start background threads for async AI processing
+    potion_manager.start()
+    combat_controller.start()
     from features.loot import LootCollector
     loot_collector = LootCollector(
         capture=capture_backend, 
@@ -206,14 +219,20 @@ def run_bot(active: bool = False, loop_delay: float = 0.1, max_duration: Optiona
                 fsm.stop()
                 break
 
+            # Central frame capture
+            frame = capture_backend.grab_frame()
+            if frame is not None and frame.size > 0:
+                potion_manager.update_frame(frame)
+                combat_controller.update_frame(frame)
+
             # Handle FSM state update
             if fsm.state == "FARMING":
                 # Execute pot checks
-                potion_manager.check_and_use_pots()
+                potion_manager.check_and_use_pots(frame)
                 
                 # Execute combat logic if inputs are not blocked
                 if not input_backend.block_inputs:
-                    is_attacking = combat_controller.run_combat_cycle()
+                    is_attacking = combat_controller.run_combat_cycle(frame)
                     # Transition to LOOTING if we were attacking but now target is lost/dead, respecting loot cooldown (e.g. 8s) and loot collector status
                     if was_attacking and not is_attacking:
                         if loot_collector.enabled and (current_time - last_loot_time >= 8.0):
@@ -222,7 +241,7 @@ def run_bot(active: bool = False, loop_delay: float = 0.1, max_duration: Optiona
                     was_attacking = is_attacking
             elif fsm.state == "LOOTING":
                 # Execute pot checks
-                potion_manager.check_and_use_pots()
+                potion_manager.check_and_use_pots(frame)
                 
                 if not input_backend.block_inputs:
                     has_more_loot = loot_collector.run_loot_cycle()
@@ -256,6 +275,8 @@ def run_bot(active: bool = False, loop_delay: float = 0.1, max_duration: Optiona
         logger.info("FSM Loop interrupted via Ctrl+C.")
     finally:
         # Final cleanup
+        potion_manager.stop()
+        combat_controller.stop()
         hotkey_manager.stop_listening()
         input_backend.release_all()
         logger.info("Bot execution terminated. Final stats logged below.")
@@ -287,12 +308,17 @@ def run_bot(active: bool = False, loop_delay: float = 0.1, max_duration: Optiona
 
 def main() -> None:
     """Main boot function."""
-    print("FSM boot ok")
-    # By default, run dry-run mode for 1 second if called directly (for smoke tests/exiting)
-    # The real manual run will use scripts/soak_run.py.
-    run_bot(active=False, loop_delay=0.1, max_duration=1.0)
-    sys.exit(0)
-
+    import multiprocessing
+    multiprocessing.freeze_support()
+    
+    if "--bot" in sys.argv:
+        sys.argv.remove("--bot")
+        from scripts.soak_run import main_soak
+        main_soak()
+    else:
+        from ui.app import AutoToolUI
+        app = AutoToolUI()
+        app.mainloop()
 
 if __name__ == "__main__":
     main()

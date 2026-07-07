@@ -16,7 +16,13 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 try:
     import win32gui
+    import ctypes
     _HAS_WIN32 = True
+    try:
+        # Prevent Windows Display Scaling from altering screen coordinate calculations
+        ctypes.windll.user32.SetProcessDPIAware()
+    except AttributeError:
+        pass
 except ImportError:
     _HAS_WIN32 = False
     logger.warning("pywin32 not available — coordinates module operating in mock mode.")
@@ -112,3 +118,35 @@ def get_client_rect_and_region(hwnd: int) -> Tuple[int, int, int, int]:
     """
     left, top, right, bottom = get_client_rect_screen(hwnd)
     return left, top, (right - left), (bottom - top)
+
+
+def activate_window(hwnd: int) -> bool:
+    """
+    Brings the specified window to the foreground.
+
+    Args:
+        hwnd (int): Window handle.
+
+    Returns:
+        bool: True if successful, False otherwise.
+    """
+    if not _HAS_WIN32 or hwnd == 0:
+        return False
+    
+    try:
+        import win32con
+        import win32gui
+        import ctypes
+        
+        # Press and release ALT to bypass Windows foreground lock
+        ctypes.windll.user32.keybd_event(0x12, 0, 0, 0)
+        ctypes.windll.user32.keybd_event(0x12, 0, 2, 0)
+        
+        # Restore the window if it's minimized
+        win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+        # Bring it to the foreground
+        win32gui.SetForegroundWindow(hwnd)
+        return True
+    except Exception as e:
+        logger.error("Failed to activate window: %s", e)
+        return False

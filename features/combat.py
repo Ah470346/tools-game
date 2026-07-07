@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import time
+import threading
 from typing import Dict, List, Optional, Any
 import numpy as np
 
@@ -133,6 +134,13 @@ class CombatController:
         self._blacklisted_targets: dict[int, float] = {}
         self._blacklist_duration = self.config.get("blacklist_duration_sec", 15.0)
 
+        # Threading states
+        self._running = False
+        self._thread_lock = threading.Lock()
+        self._latest_frame: Optional[np.ndarray] = None
+        self._yolo_thread: Optional[threading.Thread] = None
+        self._latest_tracks: list = []
+
     def _init_detector(self) -> None:
         """Lazily initializes the MonsterDetector."""
         if self.detector is None:
@@ -148,6 +156,51 @@ class CombatController:
                 nms_threshold=nms_threshold,
                 delta_threshold=delta_threshold
             )
+
+    def start(self) -> None:
+        """Starts the background YOLO worker thread."""
+        if self.target_source == "yolo":
+            self._running = True
+            self._yolo_thread = threading.Thread(target=self._yolo_worker_loop, daemon=True)
+            self._yolo_thread.start()
+            logger.info("CombatController: YOLO background worker started.")
+
+    def stop(self) -> None:
+        """Stops the background YOLO worker thread."""
+        self._running = False
+        if self._yolo_thread is not None and self._yolo_thread.is_alive():
+            self._yolo_thread.join(timeout=1.0)
+            self._yolo_thread = None
+            logger.info("CombatController: YOLO background worker stopped.")
+
+    def update_frame(self, frame: np.ndarray) -> None:
+        """Called by the main loop to provide the latest frame."""
+        with self._thread_lock:
+            self._latest_frame = frame
+
+    def _yolo_worker_loop(self) -> None:
+        """Background thread loop to run detector and tracker without blocking the main FSM loop."""
+        self._init_detector()
+        while self._running:
+            frame = None
+            with self._thread_lock:
+                if self._latest_frame is not None:
+                    frame = self._latest_frame
+
+            if frame is None or frame.size == 0 or self.detector is None:
+                time.sleep(0.05)
+                continue
+
+            try:
+                detections = self.detector.detect(frame)
+                with self._thread_lock:
+                    # Update tracker inside lock since it mutates state
+                    self._latest_tracks = self.tracker.update(detections)
+            except Exception as e:
+                logger.error("CombatController: YOLO background thread error: %s", e)
+
+            # Let the thread yield slightly
+            time.sleep(0.02)
 
     def _check_target_lock(self, frame: np.ndarray) -> bool:
         """Checks if a target is currently locked (via target HP bar color)."""
@@ -274,16 +327,25 @@ class CombatController:
             return None
         return best
 
-    def has_target(self, frame: np.ndarray) -> bool:
+    def has_target(self, frame: Optional[np.ndarray] = None) -> bool:
         """
         Determines whether an active target is locked on screen.
 
         Args:
-            frame (np.ndarray): Grabbed game window frame.
+            frame (np.ndarray, optional): Grabbed game window frame.
 
         Returns:
             bool: True if target is detected, False otherwise.
         """
+        if frame is None:
+            if self._running:
+                with self._thread_lock:
+                    frame = self._latest_frame
+            else:
+                frame = self.capture.grab_frame()
+        if frame is None or frame.size == 0:
+            return False
+
         if self.target_source == "tab":
             check_cfg = self.config.get("target_check", {})
             if not check_cfg.get("enabled", False):
@@ -310,62 +372,68 @@ class CombatController:
             if panel_visible or is_grace or panel_recent:
                 # Target is alive in-game — stay locked, update click position from YOLO
                 try:
-                    self._init_detector()
-                    if self.detector is not None:
-                        detections = self.detector.detect(frame)
-                        tracked = self.tracker.update(detections)
-                        visible = [t for t in tracked if not t.get("coasting", False)]
-                        coasting = [t for t in tracked if t.get("coasting", False)]
+                    if self._running:
+                        with self._thread_lock:
+                            tracked = list(self._latest_tracks)
+                    else:
+                        self._init_detector()
+                        if self.detector is not None:
+                            detections = self.detector.detect(frame)
+                            tracked = self.tracker.update(detections)
+                        else:
+                            tracked = []
+                    visible = [t for t in tracked if not t.get("coasting", False)]
+                    coasting = [t for t in tracked if t.get("coasting", False)]
 
-                        if self._active_target_id is not None:
-                            # 1. Active ID in visible tracks → update pos + confirm time
-                            match = next((t for t in visible
-                                          if t["track_id"] == self._active_target_id), None)
-                            if match:
-                                self._yolo_target_pos = [match["box"][0], match["box"][1]]
-                                self._last_pos_confirm_time = now
-                                logger.debug("CombatController: Tracking target ID %d at (%.3f, %.3f)",
-                                             self._active_target_id, match["box"][0], match["box"][1])
-                            else:
-                                # 2. Active ID in coasting tracks → update pos from memory,
-                                #    do NOT refresh confirm_time (position is "remembered")
-                                coast_match = next((t for t in coasting
-                                                    if t["track_id"] == self._active_target_id), None)
-                                if coast_match:
-                                    self._yolo_target_pos = [coast_match["box"][0], coast_match["box"][1]]
-                                    logger.debug("CombatController: Coasting target ID %d at (%.3f, %.3f)",
-                                                 self._active_target_id,
-                                                 coast_match["box"][0], coast_match["box"][1])
-                                elif (self._yolo_target_pos and
-                                      now - self._last_pos_confirm_time >= self._reassoc_delay):
-                                    # 3. Re-associate: only from visible tracks (not coasting)
-                                    candidates = [t for t in visible
-                                                  if t["track_id"] not in self._blacklisted_targets]
-                                    if candidates:
-                                        best = min(candidates, key=lambda t: np.sqrt(
-                                            (t["box"][0] - self._yolo_target_pos[0]) ** 2 +
-                                            (t["box"][1] - self._yolo_target_pos[1]) ** 2))
-                                        d = np.sqrt((best["box"][0] - self._yolo_target_pos[0]) ** 2 +
-                                                    (best["box"][1] - self._yolo_target_pos[1]) ** 2)
-                                        if d < self._reassoc_max_dist:
-                                            self._active_target_id = best["track_id"]
-                                            self._yolo_target_pos = [best["box"][0], best["box"][1]]
-                                            self._last_pos_confirm_time = now
-                                            logger.info("CombatController: Re-associated to track ID %d",
-                                                        self._active_target_id)
+                    if self._active_target_id is not None:
+                        # 1. Active ID in visible tracks → update pos + confirm time
+                        match = next((t for t in visible
+                                      if t["track_id"] == self._active_target_id), None)
+                        if match:
+                            self._yolo_target_pos = [match["box"][0], match["box"][1]]
+                            self._last_pos_confirm_time = now
+                            logger.debug("CombatController: Tracking target ID %d at (%.3f, %.3f)",
+                                         self._active_target_id, match["box"][0], match["box"][1])
+                        else:
+                            # 2. Active ID in coasting tracks → update pos from memory,
+                            #    do NOT refresh confirm_time (position is "remembered")
+                            coast_match = next((t for t in coasting
+                                                if t["track_id"] == self._active_target_id), None)
+                            if coast_match:
+                                self._yolo_target_pos = [coast_match["box"][0], coast_match["box"][1]]
+                                logger.debug("CombatController: Coasting target ID %d at (%.3f, %.3f)",
+                                             self._active_target_id,
+                                             coast_match["box"][0], coast_match["box"][1])
+                            elif (self._yolo_target_pos and
+                                  now - self._last_pos_confirm_time >= self._reassoc_delay):
+                                # 3. Re-associate: only from visible tracks (not coasting)
+                                candidates = [t for t in visible
+                                              if t["track_id"] not in self._blacklisted_targets]
+                                if candidates:
+                                    best = min(candidates, key=lambda t: np.sqrt(
+                                        (t["box"][0] - self._yolo_target_pos[0]) ** 2 +
+                                        (t["box"][1] - self._yolo_target_pos[1]) ** 2))
+                                    d = np.sqrt((best["box"][0] - self._yolo_target_pos[0]) ** 2 +
+                                                (best["box"][1] - self._yolo_target_pos[1]) ** 2)
+                                    if d < self._reassoc_max_dist:
+                                        self._active_target_id = best["track_id"]
+                                        self._yolo_target_pos = [best["box"][0], best["box"][1]]
+                                        self._last_pos_confirm_time = now
+                                        logger.info("CombatController: Re-associated to track ID %d",
+                                                    self._active_target_id)
 
-                        # 4. Bootstrap: panel visible but not engaged with anything
-                        if self._active_target_id is None and self._yolo_target_pos is None:
-                            best = self._select_best_target(tracked, anchor=self._recent_kill_anchor())
-                            if best is not None:
-                                self._active_target_id = best["track_id"]
-                                self._yolo_target_pos = [best["box"][0], best["box"][1]]
-                                self._last_yolo_target_time = now
-                                self._last_pos_confirm_time = now
-                                self._engagement_start_time = now
-                                logger.info("CombatController: Panel visible without lock — "
-                                            "re-acquired target ID %d at (%.3f, %.3f)",
-                                            self._active_target_id, best["box"][0], best["box"][1])
+                    # 4. Bootstrap: panel visible but not engaged with anything
+                    if self._active_target_id is None and self._yolo_target_pos is None:
+                        best = self._select_best_target(tracked, anchor=self._recent_kill_anchor())
+                        if best is not None:
+                            self._active_target_id = best["track_id"]
+                            self._yolo_target_pos = [best["box"][0], best["box"][1]]
+                            self._last_yolo_target_time = now
+                            self._last_pos_confirm_time = now
+                            self._engagement_start_time = now
+                            logger.info("CombatController: Panel visible without lock — "
+                                        "re-acquired target ID %d at (%.3f, %.3f)",
+                                        self._active_target_id, best["box"][0], best["box"][1])
                 except Exception as e:
                     logger.error("CombatController: YOLO position update error: %s", e)
 
@@ -443,24 +511,30 @@ class CombatController:
 
             # Find a new target via YOLO and click on it to lock
             try:
-                self._init_detector()
-                if self.detector is not None:
-                    detections = self.detector.detect(frame)
-                    tracked = self.tracker.update(detections)
+                if self._running:
+                    with self._thread_lock:
+                        tracked = list(self._latest_tracks)
+                else:
+                    self._init_detector()
+                    if self.detector is not None:
+                        detections = self.detector.detect(frame)
+                        tracked = self.tracker.update(detections)
+                    else:
+                        tracked = []
 
-                    best = self._select_best_target(tracked, anchor=self._recent_kill_anchor())
-                    if best is not None:
-                        dist = np.sqrt((best["box"][0] - 0.5) ** 2 +
-                                       (best["box"][1] - 0.5) ** 2)
-                        self._active_target_id = best["track_id"]
-                        self._yolo_target_pos = [best["box"][0], best["box"][1]]
-                        self._last_yolo_target_time = now
-                        self._last_pos_confirm_time = now
-                        self._engagement_start_time = now
-                        logger.info("CombatController: Clicking new target ID %d at (%.3f, %.3f), dist=%.3f",
-                                    self._active_target_id, best["box"][0], best["box"][1], dist)
-                        self.input.click(best["box"][0], best["box"][1], button="left")
-                        return False
+                best = self._select_best_target(tracked, anchor=self._recent_kill_anchor())
+                if best is not None:
+                    dist = np.sqrt((best["box"][0] - 0.5) ** 2 +
+                                   (best["box"][1] - 0.5) ** 2)
+                    self._active_target_id = best["track_id"]
+                    self._yolo_target_pos = [best["box"][0], best["box"][1]]
+                    self._last_yolo_target_time = now
+                    self._last_pos_confirm_time = now
+                    self._engagement_start_time = now
+                    logger.info("CombatController: Clicking new target ID %d at (%.3f, %.3f), dist=%.3f",
+                                self._active_target_id, best["box"][0], best["box"][1], dist)
+                    self.input.click(best["box"][0], best["box"][1], button="left")
+                    return False
             except Exception as e:
                 logger.error("CombatController: YOLO target search error: %s", e)
 
@@ -513,14 +587,20 @@ class CombatController:
                 base_interval = self.right_click_cfg.get("interval_sec", 1.0)
                 self._current_rmb_cooldown = get_random_delay(base_interval * 0.9, base_interval * 1.1)
 
-    def run_combat_cycle(self) -> bool:
+    def run_combat_cycle(self, frame: Optional[np.ndarray] = None) -> bool:
         """
         Evaluates current target lock state and executes attacks or searches for targets.
 
         Returns:
             bool: True if actively attacking a target, False if no target is active (requires FSM search/move).
         """
-        frame = self.capture.grab_frame()
+        if frame is None:
+            if self._running:
+                with self._thread_lock:
+                    frame = self._latest_frame
+            else:
+                frame = self.capture.grab_frame()
+
         if frame is None or frame.size == 0:
             logger.warning("CombatController: Captured frame is empty or invalid.")
             return False

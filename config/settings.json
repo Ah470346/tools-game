@@ -1,9 +1,10 @@
 {
-  "mode": "direct",
+  "mode": "background",
   "window_title": "Priston Tale",
+  "license_key": "eyJwYXlsb2FkIjogeyJod2lkIjogImI5NzY4MjA0YWMyZDU4MTA0MmJhNWJhMDU2YTM4MGRlOWM2OGEwZmE5MjM1NTEzNDk3ZWVmNWE4YzViOTdjOGIiLCAiZXhwaXJ5IjogMTgxNDk2MjgzMi43OTAxOTc2fSwgInNpZ25hdHVyZSI6ICI2YzgzZTJlNzg4YzM4MzVlMjU0ZTBjOTlkMjY5ZWE5YzFlZjFlMGJjYjNiNTRkZjcwZDg4MTA3ZTAwOTk0NTQyYjVkYzMwOGIyOWMzMGY2ZGQxMmFlN2ZmZjQyZjMzZWI0NzZiMjAyNmU4MzE4YWY3ZjEzM2RhMjg5OWY4YWEwMSJ9",
   "capture": {
     "backend": "auto",
-    "_comment_backend": "'auto' tries DXcam first, falls back to bitblt"
+    "_comment_backend": "'auto' tries DXcam first, falls back to bitblt. 'bitblt' causes flickering on some DirectX games so 'dxcam' is preferred."
   },
   "combat": {
     "target_source": "yolo",
@@ -18,7 +19,10 @@
       "enabled": true,
       "interval_sec": 1.0
     },
-    "click_position": [0.5, 0.5],
+    "click_position": [
+      0.5,
+      0.5
+    ],
     "engage_range_ratio": 0.5,
     "exclusion_zone_ratio": 0.06,
     "target_lock_grace_sec": 2.0,
@@ -32,10 +36,19 @@
     "next_target_anchor_sec": 5.0,
     "target_check": {
       "enabled": true,
-      "check_pixel": [0.87, 0.20],
+      "check_pixel": [
+        0.87,
+        0.2
+      ],
       "region": {
-        "start": [0.86, 0.12],
-        "end": [0.97, 0.23]
+        "start": [
+          0.86,
+          0.12
+        ],
+        "end": [
+          0.97,
+          0.23
+        ]
       },
       "min_red_ratio": 0.02
     }
@@ -46,11 +59,6 @@
       {
         "percent": 75,
         "key": "1",
-        "cooldown_sec": 1.0
-      },
-      {
-        "percent": 45,
-        "key": "2",
         "cooldown_sec": 1.0
       }
     ],
@@ -72,21 +80,51 @@
   "regions": {
     "_comment": "HP/MP regions, etc.",
     "hp_bar": {
-      "start": [0.411, 0.832],
-      "end": [0.411, 0.990],
-      "filled_color_bgr": [0, 0, 230],
+      "start": [
+        0.411,
+        0.832
+      ],
+      "end": [
+        0.411,
+        0.99
+      ],
+      "filled_color_bgr": [
+        0,
+        0,
+        230
+      ],
       "color_tolerance": 30
     },
     "mp_bar": {
-      "start": [0.594, 0.832],
-      "end": [0.594, 0.990],
-      "filled_color_bgr": [230, 0, 0],
+      "start": [
+        0.594,
+        0.832
+      ],
+      "end": [
+        0.594,
+        0.99
+      ],
+      "filled_color_bgr": [
+        230,
+        0,
+        0
+      ],
       "color_tolerance": 30
     },
     "stm_bar": {
-      "start": [0.385, 0.862],
-      "end": [0.385, 0.990],
-      "filled_color_bgr": [8, 250, 120],
+      "start": [
+        0.385,
+        0.862
+      ],
+      "end": [
+        0.385,
+        0.99
+      ],
+      "filled_color_bgr": [
+        8,
+        250,
+        120
+      ],
       "color_tolerance": 30
     }
   },
@@ -100,19 +138,42 @@
     "enabled": true,
     "tesseract_path": "C:\\Program Files\\Tesseract-OCR\\tesseract.exe",
     "hp_ocr_region": {
-      "start": [0.41, 0.81],
-      "end": [0.45, 0.83]
+      "start": [
+        0.41,
+        0.81
+      ],
+      "end": [
+        0.45,
+        0.83
+      ]
     },
     "mp_ocr_region": {
-      "start": [0.59, 0.81],
-      "end": [0.63, 0.83]
+      "start": [
+        0.59,
+        0.81
+      ],
+      "end": [
+        0.63,
+        0.83
+      ]
     }
   },
   "loot": {
-    "enabled": false,
-    "show_names_key": "a",
-    "whitelist": ["vàng", "vang", "vng", "vâng", "vaing", "vàn"],
-    "blacklist": ["potion", "weak", "trash"],
-    "click_y_offset_pixels": 20
+    "enabled": true,
+    "mode": "whitelist",
+    "trigger": "after_kill",
+    "scan_key": "a",
+    "pickup_button": "left",
+    "max_scan_duration_s": 5.0,
+    "hover_confirm_delay_ms": 150,
+    "pickup_delay_ms": 100,
+    "label_detect": {
+      "min_brightness_dark": 30,
+      "max_brightness_dark": 90,
+      "min_brightness_bright": 150,
+      "min_label_width": 30,
+      "min_label_height": 10,
+      "max_label_height": 60
+    }
   }
 }

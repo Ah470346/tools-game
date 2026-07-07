@@ -4,9 +4,18 @@ numpy
 pywin32; sys_platform == 'win32'
 pydirectinput; sys_platform == 'win32'
 onnxruntime
+dxcam
+opencv-python
+numpy
+pywin32; sys_platform == 'win32'
+pydirectinput; sys_platform == 'win32'
+onnxruntime
 keyboard
 requests
 cryptography
 pytest
 pytesseract
 
+p s u t i l  
+ 
+customtkinter

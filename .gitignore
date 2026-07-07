@@ -45,3 +45,12 @@ obj/
 .env*.local
 # Added by code-review-graph
 .code-review-graph/
+
+# Large binaries and release output
+*.zip
+*.exe
+*.mp4
+release_build/
+runs/
+item_frames/
+

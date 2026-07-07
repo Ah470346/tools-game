@@ -16,6 +16,7 @@ import ctypes
 
 from .input_base import IInputBackend
 from core.coordinates import find_window_by_title, ratio_to_screen
+from core.humanizer import generate_bezier_path, get_random_delay, add_jitter_ratio
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,50 @@ except ImportError:
     pydirectinput = None  # type: ignore[assignment]
     _HAS_PYDIRECTINPUT = False
     logger.warning("pydirectinput not available — DirectInput backend operating in mock mode.")
+
+
+# --- Ctypes structures for SendInput (cross-platform safe definitions) ---
+class KeyBdInput(ctypes.Structure):
+    _fields_ = [
+        ("wVk", ctypes.c_ushort),
+        ("wScan", ctypes.c_ushort),
+        ("dwFlags", ctypes.c_ulong),
+        ("time", ctypes.c_ulong),
+        ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong))
+    ]
+
+class HardwareInput(ctypes.Structure):
+    _fields_ = [
+        ("uMsg", ctypes.c_ulong),
+        ("wParamL", ctypes.c_ushort),
+        ("wParamH", ctypes.c_ushort)
+    ]
+
+class POINT(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+class MouseInput(ctypes.Structure):
+    _fields_ = [
+        ("dx", ctypes.c_long),
+        ("dy", ctypes.c_long),
+        ("mouseData", ctypes.c_ulong),
+        ("dwFlags", ctypes.c_ulong),
+        ("time", ctypes.c_ulong),
+        ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong))
+    ]
+
+class Input_I(ctypes.Union):
+    _fields_ = [
+        ("ki", KeyBdInput),
+        ("mi", MouseInput),
+        ("hi", HardwareInput)
+    ]
+
+class Input(ctypes.Structure):
+    _fields_ = [
+        ("type", ctypes.c_ulong),
+        ("ii", Input_I)
+    ]
 
 
 class DirectInput(IInputBackend):
@@ -77,6 +122,47 @@ class DirectInput(IInputBackend):
             )
         return hwnd
 
+    def _send_input_move(self, screen_x: int, screen_y: int) -> None:
+        """
+        Moves the mouse cursor to absolute screen coordinates using SendInput API
+        mapped to the virtual desktop space to handle multiple monitors and DPI scaling.
+        """
+        # Get virtual screen metrics
+        # SM_XVIRTUALSCREEN = 76, SM_YVIRTUALSCREEN = 77
+        # SM_CXVIRTUALSCREEN = 78, SM_CYVIRTUALSCREEN = 79
+        v_left = ctypes.windll.user32.GetSystemMetrics(76)
+        v_top = ctypes.windll.user32.GetSystemMetrics(77)
+        v_width = ctypes.windll.user32.GetSystemMetrics(78)
+        v_height = ctypes.windll.user32.GetSystemMetrics(79)
+
+        if v_width == 0 or v_height == 0:
+            v_left = 0
+            v_top = 0
+            v_width = ctypes.windll.user32.GetSystemMetrics(0)  # SM_CXSCREEN
+            v_height = ctypes.windll.user32.GetSystemMetrics(1) # SM_CYSCREEN
+
+        # Normalize coordinates to 0 - 65535 absolute range mapping to virtual desktop
+        dx = int((screen_x - v_left) * 65535 / max(1, v_width - 1))
+        dy = int((screen_y - v_top) * 65535 / max(1, v_height - 1))
+
+        INPUT_MOUSE = 0
+        MOUSEEVENTF_MOVE = 0x0001
+        MOUSEEVENTF_ABSOLUTE = 0x8000
+        MOUSEEVENTF_VIRTUALDESK = 0x4000
+
+        extra = ctypes.c_ulong(0)
+        ii_ = Input_I()
+        ii_.mi = MouseInput(
+            dx,
+            dy,
+            0,
+            MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
+            0,
+            ctypes.pointer(extra)
+        )
+        x_input = Input(INPUT_MOUSE, ii_)
+        ctypes.windll.user32.SendInput(1, ctypes.pointer(x_input), ctypes.sizeof(x_input))
+
     # ------------------------------------------------------------------
     # IInputBackend
     # ------------------------------------------------------------------
@@ -103,7 +189,19 @@ class DirectInput(IInputBackend):
         
         import sys
         if sys.platform == "win32":
-            ctypes.windll.user32.SetCursorPos(screen_x, screen_y)
+            pt = POINT()
+            ctypes.windll.user32.GetCursorPos(ctypes.byref(pt))
+            path = generate_bezier_path((pt.x, pt.y), (screen_x, screen_y), steps=12)
+            
+            for px, py in path:
+                self._send_input_move(px, py)
+                time.sleep(get_random_delay(0.001, 0.005))
+                
+            time.sleep(0.05)
+            # Tiny mouse_event jiggle (relative) to force the game to register hover state
+            MOUSEEVENTF_MOVE = 0x0001
+            ctypes.windll.user32.mouse_event(MOUSEEVENTF_MOVE, 1, 1, 0, 0)
+            ctypes.windll.user32.mouse_event(MOUSEEVENTF_MOVE, ctypes.c_ulong(-1), ctypes.c_ulong(-1), 0, 0)
         else:
             pydirectinput.moveTo(screen_x, screen_y)
 
@@ -125,16 +223,25 @@ class DirectInput(IInputBackend):
             return
 
         hwnd = self._get_hwnd_or_raise()
-        screen_x, screen_y = ratio_to_screen(x_ratio, y_ratio, hwnd)
-        logger.debug("DirectInput.click: ratio(%.3f, %.3f) -> screen(%d, %d) button=%s", x_ratio, y_ratio, screen_x, screen_y, button)
-        self.key_history.append(f"click_{button}({x_ratio:.2f},{y_ratio:.2f})")
+        # Add random jitter to coordinates
+        j_x, j_y = add_jitter_ratio(x_ratio, y_ratio, max_pixels=5)
+        screen_x, screen_y = ratio_to_screen(j_x, j_y, hwnd)
+        logger.debug("DirectInput.click: ratio(%.3f, %.3f) -> screen(%d, %d) button=%s", j_x, j_y, screen_x, screen_y, button)
+        self.key_history.append(f"click_{button}({j_x:.2f},{j_y:.2f})")
         
         import sys
         if sys.platform == "win32":
-            ctypes.windll.user32.SetCursorPos(screen_x, screen_y)
-            time.sleep(0.05)
+            pt = POINT()
+            ctypes.windll.user32.GetCursorPos(ctypes.byref(pt))
+            path = generate_bezier_path((pt.x, pt.y), (screen_x, screen_y), steps=8)
+            
+            for px, py in path:
+                self._send_input_move(px, py)
+                time.sleep(get_random_delay(0.001, 0.004))
+                
+            time.sleep(get_random_delay(0.02, 0.06))
             pydirectinput.mouseDown(button=button)
-            time.sleep(0.1)
+            time.sleep(get_random_delay(0.04, 0.12))
             pydirectinput.mouseUp(button=button)
         else:
             pydirectinput.mouseDown(x=screen_x, y=screen_y, button=button)
@@ -167,7 +274,7 @@ class DirectInput(IInputBackend):
         logger.debug("DirectInput.key: key=%s, action=%s", name, action)
         if action == "press":
             pydirectinput.keyDown(name)
-            time.sleep(0.1)
+            time.sleep(get_random_delay(0.04, 0.12))
             pydirectinput.keyUp(name)
         elif action == "down":
             pydirectinput.keyDown(name)

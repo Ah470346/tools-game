@@ -1,215 +1,230 @@
+"""
+features/loot.py
+
+LootController for finding and collecting dropped items using the Hybrid approach:
+1. Hold A to show labels
+2. Detect label rectangles
+3. Hover over each candidate to verify highlight
+4. (Optional) OCR to filter via whitelist
+5. Click to pick up
+"""
+
 import json
 import logging
 import os
 import time
+import difflib
 import numpy as np
 from typing import Dict, Optional
 
-
 from backends.input_base import IInputBackend
 from backends.capture_base import ICaptureBackend
-from vision.color_filter import find_item_labels
+from vision.label_detector import detect_labels, is_label_highlighted, get_item_click_position, LabelBox
 from vision.ocr import TextReader
+import core.humanizer as humanizer
 
 logger = logging.getLogger(__name__)
-
-
-def is_gold_color(roi: np.ndarray) -> bool:
-    """
-    Checks if the cropped ROI contains the gold/orange border pixels of a gold label.
-    Gold border color in BGR: B in [30, 80], G in [95, 170], R in [165, 245].
-
-    Args:
-        roi (np.ndarray): Cropped image region of the label.
-
-    Returns:
-        bool: True if it matches the gold color signature, False otherwise.
-    """
-    if roi is None or roi.size == 0:
-        return False
-    import cv2
-    lower_gold = np.array([30, 95, 165], dtype=np.uint8)
-    upper_gold = np.array([80, 170, 245], dtype=np.uint8)
-    
-    mask = cv2.inRange(roi, lower_gold, upper_gold)
-    gold_pixels = cv2.countNonZero(mask)
-    return gold_pixels >= 12
-
 
 class LootCollector:
     """
     Finds and collects dropped items on the ground.
-    Uses OCR to match labels against a whitelist.
+    Uses a hybrid approach: detect labels -> hover confirm -> (optional) OCR whitelist -> pickup.
     """
 
     def __init__(self, capture: ICaptureBackend, simulator: IInputBackend, config: Optional[Dict] = None) -> None:
-        """
-        Initializes the LootCollector.
-
-        Args:
-            capture (ICaptureBackend): Active capture backend.
-            simulator (IInputBackend): Active input backend.
-            config (Dict, optional): Loot settings block. If None, loads from config/settings.json.
-        """
         self.capture = capture
         self.input = simulator
         self.config = config or {}
 
-        if not config:
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+        if not self.config:
             # Fallback to load settings.json
-            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             config_path = os.path.join(base_dir, "config", "settings.json")
             if os.path.exists(config_path):
                 try:
                     with open(config_path, "r", encoding="utf-8") as f:
                         config_data = json.load(f)
                         self.config = config_data.get("loot", {})
-                    logger.info("LootCollector: Loaded config from %s", config_path)
                 except Exception as e:
                     logger.error("LootCollector: Failed to load config: %s", e)
-            else:
-                logger.warning("LootCollector: config/settings.json not found at %s", config_path)
 
-        # Destructure parameters
         self.enabled = self.config.get("enabled", True)
-        self.show_names_key = self.config.get("show_names_key", "a")
-        
-        # Load Whitelist / Blacklist (lowercase for case-insensitive matching)
-        self.whitelist = [item.lower() for item in self.config.get("whitelist", [])]
-        self.blacklist = [item.lower() for item in self.config.get("blacklist", [])]
+        self.mode = self.config.get("mode", "whitelist")  # "whitelist" or "all"
+        self.scan_key = self.config.get("scan_key", "a")
+        self.pickup_button = self.config.get("pickup_button", "left")
+        self.max_scan_duration_s = self.config.get("max_scan_duration_s", 5.0)
+        self.hover_confirm_delay_ms = self.config.get("hover_confirm_delay_ms", 250)
+        self.pickup_delay_ms = self.config.get("pickup_delay_ms", 100)
+        self.label_config = self.config.get("label_detect", {})
 
-        # Load Tesseract OCR Path from config
-        tesseract_path = None
-        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        config_path = os.path.join(base_dir, "config", "settings.json")
-        if os.path.exists(config_path):
+        # Load Whitelist / Blacklist
+        self.whitelist = []
+        self.blacklist = []
+        whitelist_path = os.path.join(base_dir, "config", "loot_whitelist.json")
+        if os.path.exists(whitelist_path):
             try:
-                with open(config_path, "r", encoding="utf-8") as f:
+                with open(whitelist_path, "r", encoding="utf-8") as f:
+                    wl_data = json.load(f)
+                    self.whitelist = [item.lower() for item in wl_data.get("whitelist", [])]
+                    self.blacklist = [item.lower() for item in wl_data.get("blacklist", [])]
+            except Exception as e:
+                logger.error("LootCollector: Failed to load whitelist: %s", e)
+
+        # Initialize OCR
+        tesseract_path = None
+        settings_path = os.path.join(base_dir, "config", "settings.json")
+        if os.path.exists(settings_path):
+            try:
+                with open(settings_path, "r", encoding="utf-8") as f:
                     config_data = json.load(f)
                     tesseract_path = config_data.get("ocr", {}).get("tesseract_path")
             except Exception:
                 pass
 
         self.ocr_reader = TextReader(tesseract_path=tesseract_path)
-        logger.info("LootCollector initialized. Enabled: %s, show_names_key: %s", self.enabled, self.show_names_key)
+        logger.info(f"LootCollector initialized. Mode: {self.mode}, key: {self.scan_key}")
 
     def _matches_whitelist(self, text: str) -> bool:
-        """Helper to check if recognized text matches the whitelist and is not blacklisted."""
-        text_lower = text.lower()
-        
-        # 1. Check blacklist first
+        if not text:
+            return False
+        text_lower = text.lower().strip()
+
         for blocked in self.blacklist:
             if blocked in text_lower:
-                logger.debug("LootCollector: Ignored item '%s' (matches blacklist '%s')", text, blocked)
+                logger.debug(f"LootCollector: Ignored item '{text}' (blacklist '{blocked}')")
                 return False
 
-        # Special heuristic for Gold (since only gold has numbers and letters like 'v', 'a', 'n', 'g' on screen)
-        # Priston Tale VTC Gold labels read like "33 v", "87 Vang", "145 Vàng"
-        has_digit = any(c.isdigit() for c in text_lower)
-        contains_gold_char = any(ch in text_lower for ch in ["v", "a", "n", "g"])
-        if has_digit and contains_gold_char:
-            logger.info("LootCollector: Match found via Gold heuristic! Item '%s'", text)
+        if not self.whitelist:
             return True
 
-        # 2. Check whitelist (fallback for other items)
         for allowed in self.whitelist:
+            # Exact substring check first (fast path)
             if allowed in text_lower:
-                logger.info("LootCollector: Match found! Item '%s' matches whitelist '%s'", text, allowed)
+                logger.info(f"LootCollector: Match found! '{text}' matches '{allowed}' (exact)")
+                return True
+            # Fuzzy check to handle OCR errors (e.g. 'M' read as 'la')
+            ratio = difflib.SequenceMatcher(None, allowed, text_lower).ratio()
+            if ratio >= 0.75:
+                logger.info(f"LootCollector: Fuzzy match! '{text}' ~ '{allowed}' (ratio={ratio:.2f})")
                 return True
 
-        logger.debug("LootCollector: Ignored item '%s' (not in whitelist)", text)
+        logger.debug(f"LootCollector: Ignored item '{text}' (not in whitelist)")
         return False
 
     def run_loot_cycle(self) -> bool:
         """
-        Runs one cycle of candidate label scanning and looting.
-
-        Returns:
-            bool: True if an item was successfully clicked/picked up, False if no items found.
+        Runs one cycle of the hybrid looting flow.
+        Returns True if at least one item was picked up.
         """
-        if not self.enabled or not self.ocr_reader.enabled:
+        if not self.enabled:
             return False
 
-        # 1. Hold name hotkey to display labels
-        logger.debug("LootCollector: Holding show-names key '%s' down...", self.show_names_key)
-        self.input.key(self.show_names_key, "down")
+        start_time = time.time()
+        logger.info(f"LootCollector: Starting loot sweep...")
         
-        # Short wait to let UI render name boxes
-        time.sleep(0.15)
-
+        # 1. Hold scan key (A)
+        self.input.key(self.scan_key, "down")
+        
+        # Wait for labels to render completely (adding humanized delay)
+        time.sleep(humanizer.get_random_delay(0.7, 1.0))
+        
         try:
-            # 2. Grab frame
+            # 2. Grab frame and detect labels
             frame = self.capture.grab_frame()
-            if frame is None or frame.size == 0:
-                logger.warning("LootCollector: Captured empty frame.")
+            if frame is None:
+                self.input.key(self.scan_key, "up")
                 return False
 
-            height, width, _ = frame.shape
-
-            # 3. Find rectangular label boxes
-            label_boxes = find_item_labels(frame)
-            logger.debug("LootCollector: Detected %d candidate item labels", len(label_boxes))
-
-            # 4. Scan boxes
-            for (x, y, w, h) in label_boxes:
-                # Add padding to prevent character clipping during cropping
-                x_pad = max(0, x - 5)
-                y_pad = max(0, y - 5)
-                w_pad = min(width - x_pad, w + 10)
-                h_pad = min(height - y_pad, h + 10)
-
-                roi = frame[y_pad:y_pad + h_pad, x_pad:x_pad + w_pad]
+            # Debug save to inspect captured image content
+            import cv2
+            os.makedirs("runs", exist_ok=True)
+            cv2.imwrite("runs/loot_capture_debug.jpg", frame)
                 
-                # Check for gold color signature first (extremely fast & bypasses OCR lag/errors)
-                if is_gold_color(roi):
-                    logger.info("LootCollector: Gold detected via color signature at x=%d, y=%d. Collecting.", x, y)
-                    self.input.key(self.show_names_key, "up")
+            labels = detect_labels(frame, self.label_config)
+            logger.info(f"LootCollector: Detected {len(labels)} candidate labels")
+            
+            if not labels:
+                self.input.key(self.scan_key, "up")
+                return False
+                
+            # 3. Sort labels by distance from center of screen (character position)
+            h, w = frame.shape[:2]
+            center_x, center_y = w // 2, h // 2
+            
+            def dist_to_center(lbl: LabelBox):
+                return (lbl.center_x - center_x)**2 + (lbl.center_y - center_y)**2
+                
+            labels.sort(key=dist_to_center)
+            
+            items_picked = 0
+            
+            # 4. Sweep each label
+            for label in labels:
+                if time.time() - start_time > self.max_scan_duration_s:
+                    logger.warning("LootCollector: Sweep timeout reached")
+                    break
                     
-                    # Calculate click coordinate: center horizontally, immediately below the bottom edge vertically
-                    y_offset = self.config.get("click_y_offset_pixels", 20)
-                    xc_click = x + w / 2
-                    yc_click = y + h + y_offset
-
-                    xc_ratio = xc_click / width
-                    yc_ratio = yc_click / height
-
-                    self.input.click(xc_ratio, yc_ratio, button="left")
-                    time.sleep(0.8)
-                    return True
-
-                # Perform OCR read
-                text = self.ocr_reader.read_text(roi)
-                if text:
-                    logger.info("LootCollector: OCR read text '%s' from label at x=%d, y=%d", text, x, y)
+                # Grab before-hover frame
+                frame_before = self.capture.grab_frame()
+                
+                # Hover over the item below the label to trigger highlight
+                norm_x, norm_y = get_item_click_position(label, w, h)
+                self.input.move(norm_x, norm_y)
+                
+                # Wait for highlight to trigger
+                base_hover = self.hover_confirm_delay_ms / 1000.0
+                time.sleep(humanizer.get_random_delay(base_hover * 0.9, base_hover * 1.1))
+                
+                # Grab after-hover frame
+                frame_after = self.capture.grab_frame()
+                
+                # DEBUG: Save frames to disk to inspect what the bot is seeing
+                import cv2
+                cv2.imwrite("hover_before.jpg", frame_before)
+                cv2.imwrite("hover_after.jpg", frame_after)
+                
+                # Verify highlight
+                if is_label_highlighted(frame_before, frame_after, label, self.label_config):
+                    logger.debug("LootCollector: Label highlight confirmed!")
+                    
+                    should_pickup = True
+                    
+                    if self.mode == "whitelist":
+                        # Crop the highlighted label from the after frame
+                        pad = 2
+                        y1 = max(0, label.y - pad)
+                        y2 = min(h, label.y + label.h + pad)
+                        x1 = max(0, label.x - pad)
+                        x2 = min(w, label.x + label.w + pad)
+                        roi = frame_after[y1:y2, x1:x2]
+                        
+                        text = self.ocr_reader.read_text(roi)
+                        if text:
+                            logger.info(f"LootCollector: OCR text: '{text}'")
+                            should_pickup = self._matches_whitelist(text)
+                        else:
+                            logger.warning("LootCollector: OCR failed to read text. Skipping.")
+                            should_pickup = False
+                            
+                    if should_pickup:
+                        # Click the item under the label
+                        click_x, click_y = get_item_click_position(label, w, h)
+                        self.input.click(click_x, click_y, button=self.pickup_button)
+                        base_pickup = self.pickup_delay_ms / 1000.0
+                        time.sleep(humanizer.get_random_delay(base_pickup * 0.9, base_pickup * 1.2))
+                        
+                        # Wait for character to walk to the item
+                        time.sleep(humanizer.get_random_delay(0.7, 1.2))
+                        items_picked += 1
                 else:
-                    logger.info("LootCollector: Detected label at x=%d, y=%d but OCR read nothing", x, y)
-
-                if text and self._matches_whitelist(text):
-                    # Item matches! Release hotkey and click
-                    logger.info("LootCollector: Attempting to collect whitelisted item: '%s'", text)
-                    self.input.key(self.show_names_key, "up")
+                    logger.debug("LootCollector: Label did NOT highlight. Skipping.")
                     
-                    # Calculate click coordinate: center horizontally, immediately below the bottom edge vertically
-                    y_offset = self.config.get("click_y_offset_pixels", 20)
-                    xc_click = x + w / 2
-                    yc_click = y + h + y_offset
-
-                    xc_ratio = xc_click / width
-                    yc_ratio = yc_click / height
-
-                    # Move and click
-                    self.input.click(xc_ratio, yc_ratio, button="left")
-                    
-                    # Cooldown for character to walk to item
-                    time.sleep(0.8)
-                    return True
-
-            # If loop finished and no item was clicked, release the key
-            self.input.key(self.show_names_key, "up")
-            logger.debug("LootCollector: No matching whitelisted items found on screen.")
-            return False
-
+            # 5. Release scan key
+            self.input.key(self.scan_key, "up")
+            return items_picked > 0
+            
         except Exception as e:
-            logger.error("LootCollector: Error during looting loop: %s", e)
-            self.input.key(self.show_names_key, "up")
+            logger.error(f"LootCollector error: {e}")
+            self.input.key(self.scan_key, "up")
             return False

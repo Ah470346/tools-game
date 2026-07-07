@@ -182,12 +182,29 @@ class DirectCapture(ICaptureBackend):
         if frame is None:
             # Fallback to last successful frame if available
             if self._last_frame is not None:
-                target_shape = (b_clamp - t_clamp, r_clamp - l_clamp, 3)
+                target_shape = (b - t, r - l, 3)
                 if self._last_frame.shape == target_shape:
                     return self._last_frame
 
             logger.warning("DXcam returned None frame; returning black placeholder.")
-            return np.zeros((b_clamp - t_clamp, r_clamp - l_clamp, 3), dtype=np.uint8)
+            return np.zeros((b - t, r - l, 3), dtype=np.uint8)
+
+        # If the frame is smaller than the requested client region (due to clamping),
+        # pad it with black pixels so that coordinates remain 1:1 with the game client.
+        target_w = r - l
+        target_h = b - t
+        if frame.shape[1] != target_w or frame.shape[0] != target_h:
+            padded_frame = np.zeros((target_h, target_w, 3), dtype=np.uint8)
+            offset_x = l_clamp - l
+            offset_y = t_clamp - t
+            h_grab = frame.shape[0]
+            w_grab = frame.shape[1]
+            # Ensure we don't go out of bounds if frame shape is somehow anomalous
+            max_h = min(h_grab, target_h - offset_y)
+            max_w = min(w_grab, target_w - offset_x)
+            if max_h > 0 and max_w > 0:
+                padded_frame[offset_y:offset_y+max_h, offset_x:offset_x+max_w] = frame[:max_h, :max_w]
+            frame = padded_frame
 
         self._last_frame = frame
         return frame
