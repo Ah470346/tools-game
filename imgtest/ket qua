@@ -1,0 +1,17 @@
+PS D:\tool1\tools-game> python scripts/debug_label_mask.py
+>>
+2026-07-08 22:55:24,363 [INFO] backends.capture_direct: DirectCapture: using DXcam backend.
+>>> YOU HAVE 5 SECONDS TO CLICK INTO THE GAME NOW! <<<
+>>> AUTO-PRESSING SCAN KEY TO REVEAL LABELS... <<<
+2026-07-08 22:55:30,467 [INFO] dxcam.core.dxgi_duplicator: DuplicateOutput1 transient failure (HRESULT=0x887A0004); falling back to DuplicateOutput.
+Detected 0 label box(es).
+
+Saved debug images to: D:\tool1\tools-game\runs
+PASS criteria: label_text_mask.jpg lights up on item name text        
+               (not the whole label background or unrelated bright    
+               scene elements), and label_boxes.jpg draws one box     
+               per item name visible on screen.
+
+Current thresholds: text_value_min=150, text_close_kernel=(25,3)      
+If false positives appear, raise text_value_min in config/settings.json.
+If text is missed/split, adjust text_close_kernel_w/h in config/settings.json.
