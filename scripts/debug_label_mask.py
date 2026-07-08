@@ -28,6 +28,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 import cv2
+import numpy as np
 
 from main import load_settings
 from core.coordinates import find_window_by_title, activate_window
@@ -85,6 +86,46 @@ def main() -> None:
     cv2.imwrite(str(out_dir / "label_closed_mask.jpg"), closed)
 
     text_mask = value >= min_bright
+
+    # ------------------------------------------------------------------
+    # Stage-by-stage diagnostics: replicate detect_labels' filter chain
+    # and count where candidates are dropped, so the log alone explains a
+    # 0-detection result (bad frame vs. too-tight thresholds).
+    # ------------------------------------------------------------------
+    h_img, w_img = frame.shape[:2]
+    dark_cov = float(np.count_nonzero(mask)) / float(mask.size)
+    bright_cov = float(np.count_nonzero(text_mask)) / float(text_mask.size)
+    print(f"\n[diag] frame={w_img}x{h_img}  V min/mean/max={value.min()}/{value.mean():.0f}/{value.max()}")
+    print(f"[diag] dark-mask coverage={dark_cov:.1%}  bright-text coverage={bright_cov:.1%}")
+
+    contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    min_w = label_cfg.get("min_label_width", 30)
+    min_h = label_cfg.get("min_label_height", 10)
+    single_row_max_h = label_cfg.get("single_row_max_height_px", 22)
+    max_stack_rows = label_cfg.get("max_stack_rows", 5)
+    row_split_enabled = label_cfg.get("row_split_enabled", True)
+    max_h_filter = (single_row_max_h * max_stack_rows) if row_split_enabled else label_cfg.get("max_label_height", 60)
+
+    n_size = n_aspect = n_pos = n_text = n_pass = 0
+    for contour in contours:
+        x, y, w, h = cv2.boundingRect(contour)
+        if not (min_w <= w <= 400 and min_h <= h <= max_h_filter):
+            n_size += 1
+            continue
+        aspect = float(w) / float(h)
+        if not (1.5 <= aspect <= 20.0):
+            n_aspect += 1
+            continue
+        if not ((0.05 * h_img <= y <= 0.95 * h_img) and (0.05 * w_img <= x <= 0.95 * w_img)):
+            n_pos += 1
+            continue
+        text_ratio = float(np.count_nonzero(text_mask[y:y + h, x:x + w])) / float(w * h)
+        if text_ratio < min_text_ratio:
+            n_text += 1
+            print(f"[diag] contour ({x},{y},{w},{h}) passed geometry but text_ratio={text_ratio:.3f} < {min_text_ratio}")
+            continue
+        n_pass += 1
+    print(f"[diag] contours: total={len(contours)} rejected[size={n_size} aspect={n_aspect} pos={n_pos} text={n_text}] passed={n_pass}")
 
     labels = detect_labels(frame, label_cfg)
     print(f"Detected {len(labels)} label box(es).")
