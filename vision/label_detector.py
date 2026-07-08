@@ -96,17 +96,23 @@ def split_stacked_label(gray: np.ndarray, box: LabelBox, config: dict) -> List["
 def detect_labels(frame: np.ndarray, config: dict) -> List[LabelBox]:
     """
     Detects item labels on the screen by finding the semi-transparent dark
-    background band behind each label, then confirming it actually contains
-    bright text (rejecting dark scenery/shadows with no text in them).
+    background band behind each label and keeping only bands that are wide,
+    solid horizontal bars (the shape of a name plate).
 
     Label backgrounds are dark and semi-transparent, which contrasts with
-    normal ground regardless of map brightness. Bright text alone is not a
-    reliable signal on bright-ground maps (e.g. sandy deserts), where the
-    ground itself can be as bright as the label text -- there, a global
-    bright-text mask floods the whole ground and swallows the dark label
-    bands as unreachable "holes". The dark band is the scene-invariant
-    signal; the bright-text-inside check is what distinguishes it from
-    other dark scenery.
+    normal ground regardless of map brightness -- the dark band is the
+    scene-invariant signal. Two things make it robust:
+
+    * Detecting on the *dark band*, not on bright text: label text dims when
+      the label is not hovered (its brightness is unreliable), whereas the
+      dark band is always present. Bright-ground maps (sandy deserts) also
+      make a bright-text mask useless -- the ground is as bright as the text.
+    * A horizontal *opening* after the close: it keeps only dark regions that
+      are a solid horizontal bar at least ``open_kernel_w`` wide, which erodes
+      away narrow/irregular dark scenery (monsters, trees, rocks, the player)
+      AND disconnects a label band from a monster sprite standing on top of
+      it, so the two don't merge into one blob. A solidity (extent) check
+      then rejects any remaining non-rectangular dark shape.
     """
     if frame is None or frame.size == 0:
         return []
@@ -116,8 +122,7 @@ def detect_labels(frame: np.ndarray, config: dict) -> List[LabelBox]:
     # Extract config values with defaults (relaxed to catch more labels)
     min_dark = config.get("min_brightness_dark", 0)
     max_dark = config.get("max_brightness_dark", 110)
-    min_brightness_bright = config.get("min_brightness_bright", 150)
-    min_text_ratio = config.get("min_text_ratio", 0.02)
+    min_solidity = config.get("min_solidity", 0.5)
     min_w = config.get("min_label_width", 15)
     min_h = config.get("min_label_height", 8)
     max_h = config.get("max_label_height", 50)
@@ -127,6 +132,8 @@ def detect_labels(frame: np.ndarray, config: dict) -> List[LabelBox]:
     dedupe_iou = config.get("dedupe_iou", 0.85)
     close_kernel_w = config.get("close_kernel_w", 25)
     close_kernel_h = config.get("close_kernel_h", 3)
+    open_kernel_w = config.get("open_kernel_w", 61)
+    open_kernel_h = config.get("open_kernel_h", 1)
 
     # When row splitting is enabled, allow tall blobs (stacked/overlapping
     # labels) through the size filter so they can be split below, instead of
@@ -140,12 +147,17 @@ def detect_labels(frame: np.ndarray, config: dict) -> List[LabelBox]:
     # one solid band, short vertically so vertically-stacked labels stay
     # separate. This also fills in the bright-text "holes" punched into the
     # dark mask by the label's own text.
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (close_kernel_w, close_kernel_h))
-    closed = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+    close_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (close_kernel_w, close_kernel_h))
+    closed = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, close_kernel)
 
-    contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    # Morphological open with a wide, 1px-tall kernel: keeps only dark regions
+    # that contain a long horizontal run (label bars), erasing narrow/irregular
+    # dark scenery and disconnecting a label from an overlapping monster. Height
+    # 1 so it never erodes a thin label vertically.
+    open_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (open_kernel_w, open_kernel_h))
+    opened = cv2.morphologyEx(closed, cv2.MORPH_OPEN, open_kernel)
 
-    text_mask = value >= min_brightness_bright
+    contours, _ = cv2.findContours(opened, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     boxes = []
     height_limit, width_limit = frame.shape[:2]
@@ -159,10 +171,10 @@ def detect_labels(frame: np.ndarray, config: dict) -> List[LabelBox]:
             if 1.5 <= aspect_ratio <= 20.0:
                 # Restrict to gameplay area (avoiding extreme edges for UI)
                 if (0.05 * height_limit <= y <= 0.95 * height_limit) and (0.05 * width_limit <= x <= 0.95 * width_limit):
-                    # Confirm the band actually contains bright text, to
-                    # reject dark scenery/shadows that have no text in them.
-                    text_ratio = float(np.count_nonzero(text_mask[y:y + h, x:x + w])) / float(w * h)
-                    if text_ratio >= min_text_ratio:
+                    # Require a solid rectangle (a name plate), rejecting any
+                    # irregular dark shape that survived the opening.
+                    solidity = cv2.contourArea(contour) / float(w * h)
+                    if solidity >= min_solidity:
                         boxes.append(LabelBox(x, y, w, h))
 
     if row_split_enabled:

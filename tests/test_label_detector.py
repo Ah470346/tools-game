@@ -82,23 +82,24 @@ def test_split_stacked_label_splits_two_stacked_rows():
 
 
 def test_detect_labels_splits_stacked_overlapping_labels():
-    # Bright ground (e.g. sandy map), with a dark semi-transparent label band
-    # containing bright text -- detection must key off the dark band
-    # confirmed by bright text inside it, not off bright text alone.
+    # Bright ground (e.g. sandy map) with one tall dark semi-transparent band
+    # (two stacked labels whose backgrounds merged). Detection keys off the
+    # solid dark bar; the two bright text rows inside it are what split it.
     frame = np.full((200, 300, 3), 200, dtype=np.uint8)
-    # Combined dark background of both stacked labels (no gap between them).
-    frame[80:107, 50:200] = 60
-    # Two stacked labels' text rows, separated by a 2px gap small enough for
-    # the closing morphology to bridge the dark band into one contour
-    # (mirrors overlapping semi-transparent label backgrounds).
-    cv2.rectangle(frame, (55, 85), (190, 94), (220, 220, 220), -1)  # text row A
-    cv2.rectangle(frame, (55, 96), (190, 105), (220, 220, 220), -1)  # text row B
+    frame[80:108, 50:200] = 60  # combined dark background of both stacked labels
+    # Text drawn as dashes (thin strokes with small gaps the close kernel
+    # bridges), the way real anti-aliased letters appear -- not one solid block.
+    for x in range(55, 190, 20):
+        cv2.rectangle(frame, (x, 86), (x + 12, 92), (220, 220, 220), -1)  # text row A
+        cv2.rectangle(frame, (x, 96), (x + 12, 102), (220, 220, 220), -1)  # text row B
 
     config = {
         "min_brightness_dark": 0,
         "max_brightness_dark": 110,
         "min_brightness_bright": 150,
-        "min_text_ratio": 0.02,
+        "open_kernel_w": 61,
+        "open_kernel_h": 1,
+        "min_solidity": 0.5,
         "min_label_width": 20,
         "min_label_height": 6,
         "max_label_height": 20,
@@ -118,14 +119,17 @@ def test_detect_labels_splits_stacked_overlapping_labels():
 
 def test_detect_labels_single_label_not_split():
     frame = np.full((200, 300, 3), 200, dtype=np.uint8)
-    frame[83:96, 50:200] = 60  # dark label band
-    cv2.rectangle(frame, (55, 86), (190, 92), (220, 220, 220), -1)  # text row
+    frame[83:97, 50:200] = 60  # dark label band
+    for x in range(55, 190, 20):
+        cv2.rectangle(frame, (x, 87), (x + 12, 92), (220, 220, 220), -1)  # text row
 
     config = {
         "min_brightness_dark": 0,
         "max_brightness_dark": 110,
         "min_brightness_bright": 150,
-        "min_text_ratio": 0.02,
+        "open_kernel_w": 61,
+        "open_kernel_h": 1,
+        "min_solidity": 0.5,
         "min_label_width": 20,
         "min_label_height": 6,
         "max_label_height": 20,
