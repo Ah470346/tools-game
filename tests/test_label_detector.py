@@ -82,15 +82,17 @@ def test_split_stacked_label_splits_two_stacked_rows():
 
 
 def test_detect_labels_splits_stacked_overlapping_labels():
-    frame = np.full((200, 300, 3), 200, dtype=np.uint8)
-    # One merged dark background spanning two overlapping labels
-    cv2.rectangle(frame, (50, 80), (200, 107), (60, 60, 60), -1)
-    cv2.rectangle(frame, (55, 85), (190, 91), (220, 220, 220), -1)  # text row A
-    cv2.rectangle(frame, (55, 96), (190, 102), (220, 220, 220), -1)  # text row B
+    # Dark ground/scene background (labels are semi-transparent, so darkness
+    # varies -- detection must key off the bright text, not the background).
+    frame = np.full((200, 300, 3), 50, dtype=np.uint8)
+    # Two stacked labels' text rows, separated by a 2px gap small enough for
+    # the closing morphology to bridge into one contour (mirrors overlapping
+    # semi-transparent label backgrounds leaving no dark gap between rows).
+    cv2.rectangle(frame, (55, 85), (190, 94), (220, 220, 220), -1)  # text row A
+    cv2.rectangle(frame, (55, 96), (190, 105), (220, 220, 220), -1)  # text row B
 
     config = {
-        "min_brightness_dark": 30,
-        "max_brightness_dark": 90,
+        "text_value_min": 150,
         "min_brightness_bright": 150,
         "min_label_width": 20,
         "min_label_height": 6,
@@ -110,13 +112,11 @@ def test_detect_labels_splits_stacked_overlapping_labels():
 
 
 def test_detect_labels_single_label_not_split():
-    frame = np.full((200, 300, 3), 200, dtype=np.uint8)
-    cv2.rectangle(frame, (50, 80), (200, 94), (60, 60, 60), -1)
+    frame = np.full((200, 300, 3), 50, dtype=np.uint8)
     cv2.rectangle(frame, (55, 83), (190, 89), (220, 220, 220), -1)
 
     config = {
-        "min_brightness_dark": 30,
-        "max_brightness_dark": 90,
+        "text_value_min": 150,
         "min_brightness_bright": 150,
         "min_label_width": 20,
         "min_label_height": 6,

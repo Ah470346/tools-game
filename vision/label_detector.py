@@ -95,16 +95,21 @@ def split_stacked_label(gray: np.ndarray, box: LabelBox, config: dict) -> List["
 
 def detect_labels(frame: np.ndarray, config: dict) -> List[LabelBox]:
     """
-    Detects semi-transparent dark item labels on the screen.
+    Detects item labels on the screen by finding bright text lines.
+
+    Label backgrounds are semi-transparent, so their darkness varies with
+    whatever scene is behind them -- but the name text itself stays bright
+    regardless (including colored rarity text, which has high HSV Value even
+    when its grayscale luma is low). Detecting on brightness of the text is
+    therefore more robust than detecting on the background.
     """
     if frame is None or frame.size == 0:
         return []
 
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    value = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)[:, :, 2]
 
     # Extract config values with defaults (relaxed to catch more labels)
-    min_dark = config.get("min_brightness_dark", 0)
-    max_dark = config.get("max_brightness_dark", 180)
+    text_value_min = config.get("text_value_min", config.get("min_brightness_bright", 150))
     min_w = config.get("min_label_width", 15)
     min_h = config.get("min_label_height", 8)
     max_h = config.get("max_label_height", 50)
@@ -112,17 +117,20 @@ def detect_labels(frame: np.ndarray, config: dict) -> List[LabelBox]:
     single_row_max_h = config.get("single_row_max_height_px", 22)
     max_stack_rows = config.get("max_stack_rows", 5)
     dedupe_iou = config.get("dedupe_iou", 0.85)
+    close_kernel_w = config.get("text_close_kernel_w", 25)
+    close_kernel_h = config.get("text_close_kernel_h", 3)
 
     # When row splitting is enabled, allow tall blobs (stacked/overlapping
     # labels) through the size filter so they can be split below, instead of
     # discarding them outright.
     max_h_filter = (single_row_max_h * max_stack_rows) if row_split_enabled else max_h
 
-    # Mask for dark regions (the semi-transparent black background of labels)
-    mask = cv2.inRange(gray, min_dark, max_dark)
+    # Mask for bright text pixels (the label name, regardless of background).
+    mask = cv2.inRange(value, text_value_min, 255)
 
-    # Morphological operations to connect text parts and smooth the box
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 3))
+    # Morphological close: wide horizontally to bridge letter/word gaps into
+    # one line, short vertically so vertically-stacked labels stay separate.
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (close_kernel_w, close_kernel_h))
     closed = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
 
     contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -144,7 +152,7 @@ def detect_labels(frame: np.ndarray, config: dict) -> List[LabelBox]:
     if row_split_enabled:
         split_result: List[LabelBox] = []
         for box in boxes:
-            split_result.extend(split_stacked_label(gray, box, config))
+            split_result.extend(split_stacked_label(value, box, config))
         boxes = split_result
 
     # Dedupe only near-identical boxes (same label detected twice), instead
@@ -162,7 +170,7 @@ def detect_labels(frame: np.ndarray, config: dict) -> List[LabelBox]:
                 break
         if not is_dup:
             # Tighten the box horizontally by finding the actual text boundaries
-            roi = gray[box.y:box.y+box.h, box.x:box.x+box.w]
+            roi = value[box.y:box.y+box.h, box.x:box.x+box.w]
             if roi.size > 0:
                 _, thresh = cv2.threshold(roi, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
                 

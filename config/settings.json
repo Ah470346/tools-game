@@ -180,8 +180,9 @@
       "argmax_margin": 1.5
     },
     "label_detect": {
-      "min_brightness_dark": 30,
-      "max_brightness_dark": 90,
+      "text_value_min": 150,
+      "text_close_kernel_w": 25,
+      "text_close_kernel_h": 3,
       "min_brightness_bright": 150,
       "min_label_width": 30,
       "min_label_height": 10,
