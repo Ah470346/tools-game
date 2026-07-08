@@ -1,0 +1,36 @@
+tôi đang fix tính năng tự nhặt item . đây là mã code đang chạy thử tại sao bot không nhận diện được item dù trong hình loot_multi_debug.jpg thì hoàn toàn xuất hiện tên item .
+PS D:\tool1\tools-game> python scripts/test_loot_multi.py
+2026-07-08 22:16:54,869 [INFO] backends.capture_direct: DirectCapture: using DXcam backend.
+2026-07-08 22:16:54,871 [INFO] features.loot: LootCollector initialized. Mode: whitelist, key: a, Loaded 1 templates.
+Mode: whitelist | Loaded templates: ['stamina']
+
+============================================================
+STAGE 1: Label detection on overlapping items
+============================================================
+>>> YOU HAVE 5 SECONDS TO CLICK INTO THE GAME NOW! <<<
+>>> AUTO-PRESSING 'A' TO REVEAL LABELS... <<<
+2026-07-08 22:17:00,974 [INFO] dxcam.core.dxgi_duplicator: DuplicateOutput1 transient failure (HRESULT=0x887A0004); falling back to DuplicateOutput.
+Detected 0 label box(es).
+
+Saved annotated preview to: D:\tool1\tools-game\runs\loot_multi_debug.jpg
+PASS criteria: box count matches the number of items visible on screen,
+               and each name row on screen has its own box (not merged).
+
+Automatically proceeding to Stage 2 in 4 seconds (QUICKLY CLICK INTO THE GAME NOW!)...
+
+============================================================
+STAGE 2: Full loot cycle (probe-sweep + pickup)
+============================================================
+Running run_loot_cycle() for up to 6 cycles (1 pickup max per cycle)...
+2026-07-08 22:17:05,194 [INFO] features.loot: LootCollector: Starting 
+loot sweep...
+2026-07-08 22:17:06,153 [INFO] features.loot: LootCollector: Detected 
+0 candidate labels
+  Cycle 1: picked_up=False
+
+Total items picked up: 0
+PASS criteria:
+  - Every whitelisted item on the ground got picked up.
+  - No clicks landed on blacklisted items or empty ground
+    (watch the character during the run, or check logs above).        
+  - Each cycle picked up at most one item.

@@ -39,9 +39,11 @@ def stage1_detection(collector: LootCollector, capture: DirectCapture) -> None:
     print("\n" + "=" * 60)
     print("STAGE 1: Label detection on overlapping items")
     print("=" * 60)
-    print("Drop 3+ items close together so their name labels overlap, then wait...")
-    time.sleep(3)
-
+    print(">>> YOU HAVE 5 SECONDS TO CLICK INTO THE GAME NOW! <<<")
+    time.sleep(5)
+    
+    print(">>> AUTO-PRESSING 'A' TO REVEAL LABELS... <<<")
+    
     collector.input.key(collector.scan_key, "down")
     time.sleep(1.0)
     frame = capture.grab_frame()
@@ -57,13 +59,14 @@ def stage1_detection(collector: LootCollector, capture: DirectCapture) -> None:
     import cv2
     canvas = frame.copy()
     for i, label in enumerate(labels):
-        text = collector._ocr_label(frame, label) or ""
-        if not text:
-            color, status = (0, 255, 255), "unknown"  # yellow
-        elif collector._matches_whitelist(text):
+        matched_name = collector._match_template(frame, label)
+        if matched_name:
+            text = matched_name
             color, status = (0, 255, 0), "wanted"  # green
         else:
-            color, status = (0, 0, 255), "trash"  # red
+            text = ""
+            color, status = (0, 255, 255), "unknown"  # yellow
+            
         cv2.rectangle(canvas, (label.x, label.y), (label.x + label.w, label.y + label.h), color, 2)
         cv2.putText(canvas, f"#{i} {text} ({status})", (label.x, max(0, label.y - 5)),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1, cv2.LINE_AA)
@@ -110,19 +113,19 @@ def main() -> None:
     hwnd = find_window_by_title(window_title)
     if not hwnd:
         print(f"Could not find game window '{window_title}'. Is Priston Tale running?")
-        sys.exit(1)
     activate_window(hwnd)
-    time.sleep(1)
-
+    
     capture = DirectCapture(window_title=window_title, prefer_backend="auto")
     simulator = DirectInput(window_title=window_title)
+    
     collector = LootCollector(capture=capture, simulator=simulator, config=loot_cfg)
     collector.enabled = True
 
-    print(f"Mode: {collector.mode} | Whitelist: {collector.whitelist} | Blacklist: {collector.blacklist}")
+    print(f"Mode: {collector.mode} | Loaded templates: {list(collector.templates.keys())}")
 
     stage1_detection(collector, capture)
-    input("\nPress Enter to run Stage 2 (this will move the mouse and click)...")
+    print("\nAutomatically proceeding to Stage 2 in 4 seconds (QUICKLY CLICK INTO THE GAME NOW!)...")
+    time.sleep(4)
     stage2_full_cycle(collector)
 
 

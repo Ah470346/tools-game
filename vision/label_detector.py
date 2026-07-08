@@ -103,11 +103,11 @@ def detect_labels(frame: np.ndarray, config: dict) -> List[LabelBox]:
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
     # Extract config values with defaults (relaxed to catch more labels)
-    min_dark = config.get("min_brightness_dark", 20)
-    max_dark = config.get("max_brightness_dark", 120)
-    min_w = config.get("min_label_width", 20)
+    min_dark = config.get("min_brightness_dark", 0)
+    max_dark = config.get("max_brightness_dark", 180)
+    min_w = config.get("min_label_width", 15)
     min_h = config.get("min_label_height", 8)
-    max_h = config.get("max_label_height", 45)
+    max_h = config.get("max_label_height", 50)
     row_split_enabled = config.get("row_split_enabled", True)
     single_row_max_h = config.get("single_row_max_height_px", 22)
     max_stack_rows = config.get("max_stack_rows", 5)
@@ -161,6 +161,26 @@ def detect_labels(frame: np.ndarray, config: dict) -> List[LabelBox]:
                 is_dup = True
                 break
         if not is_dup:
+            # Tighten the box horizontally by finding the actual text boundaries
+            roi = gray[box.y:box.y+box.h, box.x:box.x+box.w]
+            if roi.size > 0:
+                _, thresh = cv2.threshold(roi, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                
+                # Check if background got inverted (text should be white)
+                border_pixels = np.concatenate([thresh[0, :], thresh[-1, :], thresh[:, 0], thresh[:, -1]])
+                if np.mean(border_pixels) > 127:
+                    thresh = cv2.bitwise_not(thresh)
+                    
+                col_counts = thresh.sum(axis=0)
+                non_zero_cols = np.where(col_counts > 0)[0]
+                if len(non_zero_cols) > 0:
+                    pad = 3
+                    min_x = max(0, non_zero_cols[0] - pad)
+                    max_x = min(box.w, non_zero_cols[-1] + pad)
+                    if max_x - min_x > 15:  # Ensure it doesn't shrink to nothing
+                        box.x = box.x + min_x
+                        box.w = max_x - min_x
+                        
             cleaned_boxes.append(box)
 
     return cleaned_boxes
