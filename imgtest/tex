@@ -1,0 +1,29 @@
+PS D:\tool1\tools-game> python scripts/debug_label_mask.py        
+>>
+2026-07-08 23:32:16,166 [INFO] backends.capture_direct: DirectCapture: using DXcam backend.
+>>> YOU HAVE 5 SECONDS TO CLICK INTO THE GAME NOW! <<<
+>>> AUTO-PRESSING SCAN KEY TO REVEAL LABELS... <<<
+2026-07-08 23:32:22,269 [INFO] dxcam.core.dxgi_duplicator: DuplicateOutput1 transient failure (HRESULT=0x887A0004); falling back to 
+DuplicateOutput.
+
+[diag] frame=800x607  V min/mean/max=0/189/255
+[diag] dark-mask coverage=11.1%  bright-text coverage=84.6%       
+[diag] contours: total=11 rejected[size=8 aspect=0 pos=1 text=0] passed=2
+Detected 6 label box(es).
+  #0: box=(219,293,194,15) text_ratio=0.853
+  #1: box=(219,308,195,15) text_ratio=0.386
+  #2: box=(233,323,186,15) text_ratio=0.673
+  #3: box=(376,338,45,15) text_ratio=0.292
+  #4: box=(368,279,44,14) text_ratio=0.555
+  #5: box=(417,227,138,16) text_ratio=0.123
+
+Saved debug images to: D:\tool1\tools-game\runs
+PASS criteria: label_dark_mask.jpg lights up on the label background
+               bands (not the whole ground or unrelated dark scene               elements), and label_boxes.jpg draws one box per   
+               item name visible on screen.
+
+Current thresholds: dark_range=(0,110), close_kernel=(25,3), min_text_ratio=0.02
+If dark ground/scenery gets picked up, lower max_brightness_dark  
+or raise min_text_ratio in config/settings.json.
+If label bands are missed/split, adjust max_brightness_dark or    
+close_kernel_w/h in config/settings.json.
