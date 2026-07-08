@@ -95,13 +95,18 @@ def split_stacked_label(gray: np.ndarray, box: LabelBox, config: dict) -> List["
 
 def detect_labels(frame: np.ndarray, config: dict) -> List[LabelBox]:
     """
-    Detects item labels on the screen by finding bright text lines.
+    Detects item labels on the screen by finding the semi-transparent dark
+    background band behind each label, then confirming it actually contains
+    bright text (rejecting dark scenery/shadows with no text in them).
 
-    Label backgrounds are semi-transparent, so their darkness varies with
-    whatever scene is behind them -- but the name text itself stays bright
-    regardless (including colored rarity text, which has high HSV Value even
-    when its grayscale luma is low). Detecting on brightness of the text is
-    therefore more robust than detecting on the background.
+    Label backgrounds are dark and semi-transparent, which contrasts with
+    normal ground regardless of map brightness. Bright text alone is not a
+    reliable signal on bright-ground maps (e.g. sandy deserts), where the
+    ground itself can be as bright as the label text -- there, a global
+    bright-text mask floods the whole ground and swallows the dark label
+    bands as unreachable "holes". The dark band is the scene-invariant
+    signal; the bright-text-inside check is what distinguishes it from
+    other dark scenery.
     """
     if frame is None or frame.size == 0:
         return []
@@ -109,7 +114,10 @@ def detect_labels(frame: np.ndarray, config: dict) -> List[LabelBox]:
     value = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)[:, :, 2]
 
     # Extract config values with defaults (relaxed to catch more labels)
-    text_value_min = config.get("text_value_min", config.get("min_brightness_bright", 150))
+    min_dark = config.get("min_brightness_dark", 0)
+    max_dark = config.get("max_brightness_dark", 110)
+    min_brightness_bright = config.get("min_brightness_bright", 150)
+    min_text_ratio = config.get("min_text_ratio", 0.02)
     min_w = config.get("min_label_width", 15)
     min_h = config.get("min_label_height", 8)
     max_h = config.get("max_label_height", 50)
@@ -117,23 +125,27 @@ def detect_labels(frame: np.ndarray, config: dict) -> List[LabelBox]:
     single_row_max_h = config.get("single_row_max_height_px", 22)
     max_stack_rows = config.get("max_stack_rows", 5)
     dedupe_iou = config.get("dedupe_iou", 0.85)
-    close_kernel_w = config.get("text_close_kernel_w", 25)
-    close_kernel_h = config.get("text_close_kernel_h", 3)
+    close_kernel_w = config.get("close_kernel_w", 25)
+    close_kernel_h = config.get("close_kernel_h", 3)
 
     # When row splitting is enabled, allow tall blobs (stacked/overlapping
     # labels) through the size filter so they can be split below, instead of
     # discarding them outright.
     max_h_filter = (single_row_max_h * max_stack_rows) if row_split_enabled else max_h
 
-    # Mask for bright text pixels (the label name, regardless of background).
-    mask = cv2.inRange(value, text_value_min, 255)
+    # Mask for the dark semi-transparent label background band.
+    mask = cv2.inRange(value, min_dark, max_dark)
 
     # Morphological close: wide horizontally to bridge letter/word gaps into
-    # one line, short vertically so vertically-stacked labels stay separate.
+    # one solid band, short vertically so vertically-stacked labels stay
+    # separate. This also fills in the bright-text "holes" punched into the
+    # dark mask by the label's own text.
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (close_kernel_w, close_kernel_h))
     closed = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
 
     contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    text_mask = value >= min_brightness_bright
 
     boxes = []
     height_limit, width_limit = frame.shape[:2]
@@ -147,7 +159,11 @@ def detect_labels(frame: np.ndarray, config: dict) -> List[LabelBox]:
             if 1.5 <= aspect_ratio <= 20.0:
                 # Restrict to gameplay area (avoiding extreme edges for UI)
                 if (0.05 * height_limit <= y <= 0.95 * height_limit) and (0.05 * width_limit <= x <= 0.95 * width_limit):
-                    boxes.append(LabelBox(x, y, w, h))
+                    # Confirm the band actually contains bright text, to
+                    # reject dark scenery/shadows that have no text in them.
+                    text_ratio = float(np.count_nonzero(text_mask[y:y + h, x:x + w])) / float(w * h)
+                    if text_ratio >= min_text_ratio:
+                        boxes.append(LabelBox(x, y, w, h))
 
     if row_split_enabled:
         split_result: List[LabelBox] = []

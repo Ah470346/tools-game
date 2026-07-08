@@ -1,22 +1,23 @@
 """
 scripts/debug_label_mask.py
 
-Manual validation script for the bright-text label detector. Run this while
+Manual validation script for the dark-band label detector. Run this while
 Priston Tale is open with item name labels visible on the ground, so you can
-visually confirm the text mask lands on the item names (and tune
-`text_value_min` / `text_close_kernel_w` in config/settings.json if the live
-scene introduces false positives or misses text).
+visually confirm the dark mask lands on the label backgrounds (and tune
+`max_brightness_dark` / `close_kernel_w` / `min_text_ratio` in
+config/settings.json if the live scene introduces false positives or misses
+labels).
 
 Holds the scan key, grabs one frame, and writes each detection stage to
 `runs/`:
   - label_raw.jpg          the captured frame
-  - label_text_mask.jpg    bright-text mask (before morphological close)
+  - label_dark_mask.jpg    dark label-background mask (before morphological close)
   - label_closed_mask.jpg  mask after morphological close (what findContours sees)
   - label_boxes.jpg        the captured frame with detected boxes drawn
 
-PASS criteria: label_text_mask.jpg lights up on the item name text (not the
-whole label background or unrelated bright scene elements), and
-label_boxes.jpg draws one box per item name visible on screen.
+PASS criteria: label_dark_mask.jpg lights up on the label background bands
+(not the whole ground or unrelated dark scene elements), and label_boxes.jpg
+draws one box per item name visible on screen.
 """
 
 import sys
@@ -69,37 +70,46 @@ def main() -> None:
     cv2.imwrite(str(out_dir / "label_raw.jpg"), frame)
 
     value = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)[:, :, 2]
-    text_value_min = label_cfg.get("text_value_min", label_cfg.get("min_brightness_bright", 150))
-    close_w = label_cfg.get("text_close_kernel_w", 25)
-    close_h = label_cfg.get("text_close_kernel_h", 3)
+    min_dark = label_cfg.get("min_brightness_dark", 0)
+    max_dark = label_cfg.get("max_brightness_dark", 110)
+    min_bright = label_cfg.get("min_brightness_bright", 150)
+    min_text_ratio = label_cfg.get("min_text_ratio", 0.02)
+    close_w = label_cfg.get("close_kernel_w", 25)
+    close_h = label_cfg.get("close_kernel_h", 3)
 
-    mask = cv2.inRange(value, text_value_min, 255)
-    cv2.imwrite(str(out_dir / "label_text_mask.jpg"), mask)
+    mask = cv2.inRange(value, min_dark, max_dark)
+    cv2.imwrite(str(out_dir / "label_dark_mask.jpg"), mask)
 
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (close_w, close_h))
     closed = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
     cv2.imwrite(str(out_dir / "label_closed_mask.jpg"), closed)
+
+    text_mask = value >= min_bright
 
     labels = detect_labels(frame, label_cfg)
     print(f"Detected {len(labels)} label box(es).")
 
     canvas = frame.copy()
     for i, label in enumerate(labels):
+        roi_text = text_mask[label.y:label.y + label.h, label.x:label.x + label.w]
+        text_ratio = float(roi_text.sum()) / float(label.w * label.h) if label.w * label.h > 0 else 0.0
         cv2.rectangle(canvas, (label.x, label.y), (label.x + label.w, label.y + label.h), (0, 255, 0), 2)
         cv2.putText(canvas, f"#{i}", (label.x, max(0, label.y - 5)),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1, cv2.LINE_AA)
-        print(f"  #{i}: box=({label.x},{label.y},{label.w},{label.h})")
+        print(f"  #{i}: box=({label.x},{label.y},{label.w},{label.h}) text_ratio={text_ratio:.3f}")
     cv2.imwrite(str(out_dir / "label_boxes.jpg"), canvas)
 
     print(f"\nSaved debug images to: {out_dir}")
-    print("PASS criteria: label_text_mask.jpg lights up on item name text")
-    print("               (not the whole label background or unrelated bright")
-    print("               scene elements), and label_boxes.jpg draws one box")
-    print("               per item name visible on screen.")
-    print(f"\nCurrent thresholds: text_value_min={text_value_min}, "
-          f"text_close_kernel=({close_w},{close_h})")
-    print("If false positives appear, raise text_value_min in config/settings.json.")
-    print("If text is missed/split, adjust text_close_kernel_w/h in config/settings.json.")
+    print("PASS criteria: label_dark_mask.jpg lights up on the label background")
+    print("               bands (not the whole ground or unrelated dark scene")
+    print("               elements), and label_boxes.jpg draws one box per")
+    print("               item name visible on screen.")
+    print(f"\nCurrent thresholds: dark_range=({min_dark},{max_dark}), "
+          f"close_kernel=({close_w},{close_h}), min_text_ratio={min_text_ratio}")
+    print("If dark ground/scenery gets picked up, lower max_brightness_dark")
+    print("or raise min_text_ratio in config/settings.json.")
+    print("If label bands are missed/split, adjust max_brightness_dark or")
+    print("close_kernel_w/h in config/settings.json.")
 
 
 if __name__ == "__main__":

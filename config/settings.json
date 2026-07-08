@@ -180,10 +180,12 @@
       "argmax_margin": 1.5
     },
     "label_detect": {
-      "text_value_min": 150,
-      "text_close_kernel_w": 25,
-      "text_close_kernel_h": 3,
+      "min_brightness_dark": 0,
+      "max_brightness_dark": 110,
+      "close_kernel_w": 25,
+      "close_kernel_h": 3,
       "min_brightness_bright": 150,
+      "min_text_ratio": 0.02,
       "min_label_width": 30,
       "min_label_height": 10,
       "max_label_height": 60,

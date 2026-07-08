@@ -82,18 +82,23 @@ def test_split_stacked_label_splits_two_stacked_rows():
 
 
 def test_detect_labels_splits_stacked_overlapping_labels():
-    # Dark ground/scene background (labels are semi-transparent, so darkness
-    # varies -- detection must key off the bright text, not the background).
-    frame = np.full((200, 300, 3), 50, dtype=np.uint8)
+    # Bright ground (e.g. sandy map), with a dark semi-transparent label band
+    # containing bright text -- detection must key off the dark band
+    # confirmed by bright text inside it, not off bright text alone.
+    frame = np.full((200, 300, 3), 200, dtype=np.uint8)
+    # Combined dark background of both stacked labels (no gap between them).
+    frame[80:107, 50:200] = 60
     # Two stacked labels' text rows, separated by a 2px gap small enough for
-    # the closing morphology to bridge into one contour (mirrors overlapping
-    # semi-transparent label backgrounds leaving no dark gap between rows).
+    # the closing morphology to bridge the dark band into one contour
+    # (mirrors overlapping semi-transparent label backgrounds).
     cv2.rectangle(frame, (55, 85), (190, 94), (220, 220, 220), -1)  # text row A
     cv2.rectangle(frame, (55, 96), (190, 105), (220, 220, 220), -1)  # text row B
 
     config = {
-        "text_value_min": 150,
+        "min_brightness_dark": 0,
+        "max_brightness_dark": 110,
         "min_brightness_bright": 150,
+        "min_text_ratio": 0.02,
         "min_label_width": 20,
         "min_label_height": 6,
         "max_label_height": 20,
@@ -112,12 +117,15 @@ def test_detect_labels_splits_stacked_overlapping_labels():
 
 
 def test_detect_labels_single_label_not_split():
-    frame = np.full((200, 300, 3), 50, dtype=np.uint8)
-    cv2.rectangle(frame, (55, 83), (190, 89), (220, 220, 220), -1)
+    frame = np.full((200, 300, 3), 200, dtype=np.uint8)
+    frame[83:96, 50:200] = 60  # dark label band
+    cv2.rectangle(frame, (55, 86), (190, 92), (220, 220, 220), -1)  # text row
 
     config = {
-        "text_value_min": 150,
+        "min_brightness_dark": 0,
+        "max_brightness_dark": 110,
         "min_brightness_bright": 150,
+        "min_text_ratio": 0.02,
         "min_label_width": 20,
         "min_label_height": 6,
         "max_label_height": 20,
